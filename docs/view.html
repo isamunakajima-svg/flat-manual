@@ -13,6 +13,8 @@
   <select id="lang" style="width:auto;padding:6px 8px;font-size:14px"></select>
 </header>
 <main>
+  <div id="gate" class="hidden"></div>
+  <div id="content" class="hidden">
   <div id="whoBox" class="card hidden">
     <label class="field" style="margin:0">
       <span>あなたの名前を選んでください（見た記録に使います）</span>
@@ -46,6 +48,7 @@
     <button class="primary" id="confirmBtn" style="width:100%">確認しました</button>
     <p class="muted" id="confirmMsg" style="margin:8px 0 0"></p>
   </div>
+  </div>
 </main>
 
 <script src="config.js"></script>
@@ -55,7 +58,7 @@
   const id = FM.qs('id');
   const sessionId = FM.uid();
   let manual, player, lang = 'ja';
-  let staff = FM.store.get('staff', '');
+  let staff = '', me;
 
   // 視聴の記録
   const track = { watchedSec: 0, duration: 0, maxPos: 0, completed: false, stepViews: {}, confirmed: false };
@@ -69,6 +72,16 @@
     else FM.api('log', params).catch(() => {});
     dirty = false;
   }
+
+  try {
+    me = await FM.ready(document.getElementById('gate'));
+  } catch (e) {
+    document.getElementById('title').textContent = '開けませんでした';
+    FM.toast(e.message, true);
+    return;
+  }
+  staff = me.name || '';
+  document.getElementById('content').classList.remove('hidden');
 
   try {
     manual = await FM.api('get', { id });
@@ -90,14 +103,12 @@
   langSel.onchange = () => { lang = langSel.value; FM.store.set('lang', lang); renderSteps(); lastSub = -2; };
   const pick = (obj) => (obj && (obj[lang] || obj[manual.langs[0]])) || '';
 
-  // 名前
-  if (!staff) {
+  // 名前（ブラウザで名前を選ぶ方式のときだけ）
+  if (me.mode === 'legacy' && !staff) {
     const box = document.getElementById('whoBox');
     const sel = document.getElementById('staff');
     box.classList.remove('hidden');
-    FM.api('staff').then(list => {
-      sel.innerHTML = '<option value="">選んでください</option>' + list.map(n => `<option>${FM.esc(n)}</option>`).join('');
-    });
+    sel.innerHTML = '<option value="">選んでください</option>' + (me.candidates || []).map(n => `<option>${FM.esc(n)}</option>`).join('');
     sel.onchange = () => { staff = sel.value; FM.store.set('staff', staff); if (staff) box.classList.add('hidden'); dirty = true; };
   }
 

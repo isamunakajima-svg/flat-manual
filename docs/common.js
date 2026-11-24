@@ -2,19 +2,39 @@
 (function () {
   const GAS_URL = (window.FLAT_MANUAL_CONFIG || {}).GAS_URL;
 
+  const LIFF_ID = (window.FLAT_MANUAL_CONFIG || {}).LIFF_ID || '';
+  const auth = { idToken: '', mode: '' };
+
   // GASへの問い合わせ。Content-Type を付けない（text/plain）ので事前確認が要らない
   async function api(action, params) {
-    const body = JSON.stringify(Object.assign({ action: action }, params || {}));
+    const extra = {};
+    if (auth.idToken) extra.idToken = auth.idToken;
+    const adminKey = store.get('adminKey', '');
+    if (adminKey && !('key' in (params || {}))) extra.key = adminKey;
+    const body = JSON.stringify(Object.assign({ action: action }, extra, params || {}));
     const res = await fetch(GAS_URL, { method: 'POST', body: body, redirect: 'follow' });
     if (!res.ok) throw new Error('通信エラー (' + res.status + ')');
     const json = await res.json();
-    if (!json.ok) throw new Error(json.error || 'エラー');
+    if (!json.ok) {
+      const msg = json.error || 'エラー';
+      // LINEのログインが切れていたら、ログインし直す
+      if (msg.indexOf('AUTH:') === 0 && window.liff && LIFF_ID) {
+        try { liff.logout(); } catch (e) {}
+        liff.login({ redirectUri: location.href });
+        await new Promise(() => {});
+      }
+      throw new Error(msg.replace(/^(AUTH|BLOCKED|PENDING|UNREGISTERED):/, ''));
+    }
     return json.data;
   }
 
   // ページを閉じるときの記録用（返事は待たない）
   function beacon(action, params) {
-    const body = JSON.stringify(Object.assign({ action: action }, params || {}));
+    const extra = {};
+    if (auth.idToken) extra.idToken = auth.idToken;
+    const adminKey = store.get('adminKey', '');
+    if (adminKey) extra.key = adminKey;
+    const body = JSON.stringify(Object.assign({ action: action }, extra, params || {}));
     try {
       if (navigator.sendBeacon && navigator.sendBeacon(GAS_URL, new Blob([body], { type: 'text/plain' }))) return;
     } catch (e) {}
@@ -98,5 +118,61 @@
     return found;
   }
 
-  window.FM = { api, beacon, store, fmtTime, parseTime, esc, qs, uid, toast, loadYouTube, indexAt };
+  function loadScript(src) {
+    return new Promise((resolve, reject) => {
+      const s = document.createElement('script');
+      s.src = src; s.onload = resolve; s.onerror = () => reject(new Error('読み込みに失敗: ' + src));
+      document.head.appendChild(s);
+    });
+  }
+
+  /**
+   * スタッフ用の画面を開くときの確認。
+   * 見てよいときは { name, mode } を返す。名前選び・承認待ち・閲覧不可のときは gate に案内を出して止まる。
+   * mode: 'line'（LINEで本人確認）/ 'legacy'（画面で名前を選ぶ）/ 'admin'（管理パスワードのある端末）
+   */
+  async function ready(gateEl) {
+    if (LIFF_ID && !store.get('adminKey', '')) {
+      await loadScript('https://static.line-scdn.net/liff/edge/2/sdk.js');
+      await liff.init({ liffId: LIFF_ID });
+      if (new URLSearchParams(location.search).has('liff.state')) await new Promise(() => {}); // LIFFが目的のページへ移動中
+      if (!liff.isLoggedIn()) { liff.login({ redirectUri: location.href }); await new Promise(() => {}); }
+      auth.idToken = liff.getIDToken() || '';
+    }
+    const me = await api('me');
+    auth.mode = me.mode;
+    if (me.status === 'ok') {
+      if (me.mode === 'legacy') me.name = store.get('staff', '');
+      return me;
+    }
+    const show = html => {
+      gateEl.innerHTML = html; gateEl.classList.remove('hidden');
+      const l = document.getElementById('loading'); if (l) l.classList.add('hidden');
+    };
+    if (me.status === 'blocked') {
+      show('<div class="card"><h2>閲覧できません</h2><p class="muted">このアカウントではマニュアルを見られません。</p></div>');
+    } else if (me.status === 'pending') {
+      show(`<div class="card"><h2>承認待ちです</h2>
+        <p>${esc(me.name)} さんとして登録しました。管理者が承認すると見られるようになります。</p>
+        <button id="gateReload" style="width:100%">承認されたか確認する</button></div>`);
+      document.getElementById('gateReload').onclick = () => location.reload();
+    } else {
+      const opts = (me.candidates || []).map(n => `<option>${esc(n)}</option>`).join('');
+      show(`<div class="card"><h2>はじめに、あなたの名前を選んでください</h2>
+        <p class="muted">${me.lineName ? 'LINEの名前：' + esc(me.lineName) + '<br>' : ''}一度選ぶと、次からは自動で記録されます。</p>
+        <select id="gateName"><option value="">選んでください</option>${opts}</select>
+        <button class="primary" id="gateSend" style="width:100%;margin-top:10px">この名前で登録する</button>
+        <p class="muted" style="margin-top:8px">自分の名前がないときは、管理者に伝えてください。</p></div>`);
+      document.getElementById('gateSend').onclick = async () => {
+        const name = document.getElementById('gateName').value;
+        if (!name) { toast('名前を選んでください', true); return; }
+        if (!window.confirm(name + ' さんで登録します。よろしいですか？')) return;
+        try { await api('register', { name }); location.reload(); }
+        catch (e) { toast(e.message, true); }
+      };
+    }
+    await new Promise(() => {});
+  }
+
+  window.FM = { api, beacon, store, fmtTime, parseTime, esc, qs, uid, toast, loadYouTube, indexAt, ready, auth };
 })();

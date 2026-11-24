@@ -63,6 +63,17 @@
       <div id="allList" class="list"><p class="muted">読み込み中…</p></div>
     </div>
 
+    <!-- スタッフ -->
+    <div class="card">
+      <h2>スタッフ <span class="badge hidden" id="pendingBadge"></span></h2>
+      <p class="muted" style="margin-top:0">LINEで開いて名前を選んだ人は「承認待ち」になります。承認すると見られるようになります。辞めた人は「無効にする」で見られなくなります（記録は残ります）。</p>
+      <div class="row" style="margin-bottom:10px">
+        <input type="text" id="newStaff" class="grow" placeholder="新しいスタッフの名前">
+        <button id="addStaffBtn">追加</button>
+      </div>
+      <div id="staffList"><p class="muted">読み込み中…</p></div>
+    </div>
+
     <p class="muted"><button class="small" id="logoutBtn">この端末からパスワードを消す</button></p>
   </div>
 </main>
@@ -86,7 +97,47 @@
     } catch (e) { $('allList').innerHTML = `<p class="muted">${FM.esc(e.message)}</p>`; }
   }
 
-  FMA.requireLogin(loadList);
+  function renderStaff(list) {
+    const pending = list.filter(s => s.active && s.linked && !s.approved).length;
+    $('pendingBadge').textContent = '承認待ち ' + pending;
+    $('pendingBadge').classList.toggle('hidden', !pending);
+    $('staffList').innerHTML = list.length ? list.map(s => {
+      let status, btns = '';
+      if (!s.active) { status = '<span class="badge draft">無効</span>'; btns = `<button class="small" data-op="enable">有効に戻す</button>`; }
+      else if (s.linked && !s.approved) { status = '<span class="badge">承認待ち</span>'; btns = `<button class="small primary" data-op="approve">承認</button>`; }
+      else if (s.linked) { status = '<span class="badge" style="background:#eaf4ec;color:#3f7d4f">利用中</span>'; }
+      else { status = '<span class="badge draft">未登録</span>'; }
+      if (s.active) btns += ` <button class="small danger" data-op="disable">無効にする</button>`;
+      if (s.linked) btns += ` <button class="small" data-op="unlink">LINE連携を外す</button>`;
+      return `<div class="edit-row" data-name="${FM.esc(s.name)}">
+        <div class="row"><strong class="grow">${FM.esc(s.name)}</strong>${status}</div>
+        ${s.lineName ? `<div class="muted" style="font-size:13px">LINEの名前：${FM.esc(s.lineName)}</div>` : ''}
+        <div class="row" style="margin-top:6px">${btns}</div>
+      </div>`;
+    }).join('') : '<p class="muted">まだいません</p>';
+  }
+  async function loadStaff() {
+    try { renderStaff(await FMA.adminApi('staffList')); }
+    catch (e) { $('staffList').innerHTML = `<p class="muted">${FM.esc(e.message)}</p>`; }
+  }
+  const opLabel = { approve: '承認', disable: '無効に', enable: '有効に', unlink: 'LINE連携を外' };
+  $('staffList').addEventListener('click', async e => {
+    const b = e.target.closest('button[data-op]'); if (!b) return;
+    const name = b.closest('.edit-row').dataset.name;
+    const op = b.dataset.op;
+    if (op !== 'approve' && !window.confirm(`${name} さんを${opLabel[op]}します。よろしいですか？`)) return;
+    b.disabled = true;
+    try { renderStaff(await FMA.adminApi('staffUpdate', { name, op })); FM.toast('更新しました'); }
+    catch (err) { FM.toast(err.message, true); b.disabled = false; }
+  });
+  $('addStaffBtn').onclick = async () => {
+    const name = $('newStaff').value.trim();
+    if (!name) return;
+    try { renderStaff(await FMA.adminApi('staffAdd', { name })); $('newStaff').value = ''; FM.toast('追加しました'); }
+    catch (err) { FM.toast(err.message, true); }
+  };
+
+  FMA.requireLogin(() => { loadList(); loadStaff(); });
   $('logoutBtn').onclick = () => { FM.store.remove('adminKey'); location.reload(); };
 
   // 作り方の切り替え

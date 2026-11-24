@@ -5,6 +5,8 @@
  *   ADMIN_KEY      : 管理画面のパスワード（好きな文字列）
  *   GEMINI_API_KEY : Google AI Studio で作ったAPIキー
  *   GEMINI_MODEL   : 使うモデル名（省略時は下の DEFAULT_MODEL）
+ *   LINE_CHANNEL_ID: LIFFを作ったLINEログインチャネルのチャネルID
+ *                    （入れるとLINEでの本人確認が有効になる。空なら名前を選ぶ方式のまま）
  *
  * 初回は setup() を一度だけ実行すると、必要なシートが作られます。
  */
@@ -19,7 +21,7 @@ const SHEETS = {
   steps: ['manualId', 'idx', 'start'].concat(flatLang_(['title', 'desc'])),
   subs: ['manualId', 'idx', 'start', 'end'].concat(LANGS.map(l => 'text_' + l)),
   quiz: ['manualId', 'idx', 'question', 'choices', 'answer'],
-  staff: ['name', 'active'],
+  staff: ['name', 'active', 'lineUserId', 'lineName', 'approved', 'registeredAt'],
   logs: ['sessionId', 'ts', 'staff', 'manualId', 'watchedSec', 'duration', 'maxPos', 'completed', 'stepViews', 'quizScore', 'quizTotal', 'confirmed'],
   reports: ['ts', 'staff', 'manualId', 'subIdx', 'note', 'done']
 };
@@ -45,6 +47,22 @@ function setup() {
   if (staff.getLastRow() < 2) {
     staff.getRange(2, 1, 2, 2).setValues([['テスト太郎', true], ['テスト花子', true]]);
   }
+  // active と approved をチェックボックスにする
+  staff.getRange('B2:B300').insertCheckboxes();
+  staff.getRange('E2:E300').insertCheckboxes();
+}
+
+/** 列が増えたときに見出しだけ追加する（setup をやり直さなくても動くように） */
+function ensureHeaders_() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  ['staff', 'logs'].forEach(name => {
+    const sh = ss.getSheetByName(name);
+    if (!sh) return;
+    const header = SHEETS[name];
+    if (sh.getLastColumn() < header.length) {
+      sh.getRange(1, 1, 1, header.length).setValues([header]).setFontWeight('bold');
+    }
+  });
 }
 
 /* ========== 入口 ========== */
@@ -61,6 +79,7 @@ function doPost(e) {
     return json_({ ok: false, error: 'bad request' });
   }
   try {
+    ensureHeaders_();
     const action = req.action;
     const pub = PUBLIC_ACTIONS[action];
     const adm = ADMIN_ACTIONS[action];
@@ -226,6 +245,130 @@ function round1_(n) {
   return Math.round((Number(n) || 0) * 10) / 10;
 }
 
+/* ========== だれが見ているか（LINEでの本人確認） ========== */
+
+function lineEnabled_() {
+  return !!prop_('LINE_CHANNEL_ID');
+}
+
+/** LIFFのIDトークンをLINEに確認してもらう（結果は30分キャッシュ） */
+function verifyLine_(idToken) {
+  if (!idToken) throw new Error('AUTH:LINEでログインしてください');
+  const digest = Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, idToken)
+    .map(b => ('0' + (b & 0xff).toString(16)).slice(-2)).join('');
+  const cache = CacheService.getScriptCache();
+  const hit = cache.get('tok_' + digest);
+  if (hit) return JSON.parse(hit);
+  const res = UrlFetchApp.fetch('https://api.line.me/oauth2/v2.1/verify', {
+    method: 'post',
+    payload: { id_token: idToken, client_id: prop_('LINE_CHANNEL_ID') },
+    muteHttpExceptions: true
+  });
+  if (res.getResponseCode() !== 200) throw new Error('AUTH:ログインの有効期限が切れました');
+  const d = JSON.parse(res.getContentText());
+  const who = { userId: d.sub, lineName: d.name || '' };
+  cache.put('tok_' + digest, JSON.stringify(who), 1800);
+  return who;
+}
+
+function staffRows_() {
+  return readAll_('staff').map((r, i) => Object.assign(r, { _row: i + 2 })).filter(r => r.name);
+}
+
+/**
+ * リクエストの送り主を調べる。
+ * status: ok（見てよい）/ unregistered（名前をまだ選んでいない）/ pending（承認待ち）/ blocked（無効）
+ */
+function identify_(req) {
+  if (isAdmin_(req.key)) return { status: 'ok', name: '管理者', admin: true };
+  if (!lineEnabled_()) {
+    // LINE未設定のあいだは、これまでどおり画面で選んだ名前を使う
+    return { status: 'ok', name: req.staff || '(未選択)', legacy: true };
+  }
+  const who = verifyLine_(req.idToken);
+  const row = staffRows_().find(r => String(r.lineUserId) === who.userId);
+  if (!row) return { status: 'unregistered', lineName: who.lineName, userId: who.userId };
+  if (row.active !== true) return { status: 'blocked', name: row.name };
+  if (row.approved !== true) return { status: 'pending', name: row.name };
+  return { status: 'ok', name: String(row.name), userId: who.userId };
+}
+
+function requireViewer_(req) {
+  const me = identify_(req);
+  if (me.status === 'blocked') throw new Error('BLOCKED:このアカウントでは閲覧できません');
+  if (me.status === 'pending') throw new Error('PENDING:承認待ちです');
+  if (me.status === 'unregistered') throw new Error('UNREGISTERED:名前を選んでください');
+  return me;
+}
+
+/** 画面を開いたときの確認。名前を選ぶ必要があれば候補も返す */
+function me_(req) {
+  const me = identify_(req);
+  const out = { status: me.status, name: me.name || '', lineName: me.lineName || '', mode: me.admin ? 'admin' : (me.legacy ? 'legacy' : 'line') };
+  if (me.status === 'unregistered') {
+    out.candidates = staffRows_().filter(r => r.active === true && !r.lineUserId).map(r => String(r.name));
+  }
+  if (me.legacy) {
+    out.candidates = staffRows_().filter(r => r.active === true).map(r => String(r.name));
+  }
+  return out;
+}
+
+/** 初回：名前を選んでLINEと結び付ける（承認待ちになる） */
+function register_(req) {
+  if (!lineEnabled_()) throw new Error('LINEの設定がまだです');
+  const who = verifyLine_(req.idToken);
+  return withLock_(() => {
+    const rows = staffRows_();
+    if (rows.some(r => String(r.lineUserId) === who.userId)) throw new Error('すでに登録されています');
+    const row = rows.find(r => String(r.name) === String(req.name));
+    if (!row || row.active !== true) throw new Error('その名前は選べません');
+    if (row.lineUserId) throw new Error('その名前はほかの人が登録済みです。管理者に伝えてください');
+    const sh = sheet_('staff');
+    const h = SHEETS.staff;
+    sh.getRange(row._row, h.indexOf('lineUserId') + 1).setValue(who.userId);
+    sh.getRange(row._row, h.indexOf('lineName') + 1).setValue(who.lineName);
+    sh.getRange(row._row, h.indexOf('approved') + 1).setValue(false);
+    sh.getRange(row._row, h.indexOf('registeredAt') + 1).setValue(new Date().toISOString());
+    return { status: 'pending', name: row.name };
+  });
+}
+
+/* --- 管理画面からのスタッフ管理 --- */
+
+function staffAdminList_() {
+  return staffRows_().map(r => ({
+    name: String(r.name), active: r.active === true, approved: r.approved === true,
+    linked: !!r.lineUserId, lineName: r.lineName || '', registeredAt: r.registeredAt ? String(r.registeredAt) : ''
+  }));
+}
+
+function staffUpdate_(req) {
+  return withLock_(() => {
+    const row = staffRows_().find(r => String(r.name) === String(req.name));
+    if (!row) throw new Error('スタッフが見つかりません');
+    const sh = sheet_('staff');
+    const h = SHEETS.staff;
+    const set = (k, v) => sh.getRange(row._row, h.indexOf(k) + 1).setValue(v);
+    if (req.op === 'approve') set('approved', true);
+    else if (req.op === 'disable') set('active', false);
+    else if (req.op === 'enable') set('active', true);
+    else if (req.op === 'unlink') { set('lineUserId', ''); set('lineName', ''); set('approved', false); set('registeredAt', ''); }
+    else throw new Error('不明な操作');
+    return staffAdminList_();
+  });
+}
+
+function staffAdd_(req) {
+  const name = String(req.name || '').trim();
+  if (!name) throw new Error('名前を入れてください');
+  return withLock_(() => {
+    if (staffRows_().some(r => String(r.name) === name)) throw new Error('同じ名前がすでにあります');
+    sheet_('staff').appendRow(rowFrom_('staff', { name: name, active: true, approved: false }));
+    return staffAdminList_();
+  });
+}
+
 /* ========== 視聴記録 ========== */
 
 function logView_(req) {
@@ -233,7 +376,7 @@ function logView_(req) {
   return withLock_(() => {
     const sh = sheet_('logs');
     const rec = {
-      sessionId: req.sessionId, ts: new Date().toISOString(), staff: req.staff || '(未選択)',
+      sessionId: req.sessionId, ts: new Date().toISOString(), staff: req._viewer || req.staff || '(未選択)',
       manualId: req.manualId, watchedSec: round1_(req.watchedSec), duration: round1_(req.duration),
       maxPos: round1_(req.maxPos), completed: !!req.completed,
       stepViews: JSON.stringify(req.stepViews || {}),
@@ -296,7 +439,7 @@ function stepStats_(manualId) {
 
 function addReport_(req) {
   sheet_('reports').appendRow(rowFrom_('reports', {
-    ts: new Date().toISOString(), staff: req.staff || '', manualId: req.manualId,
+    ts: new Date().toISOString(), staff: req._viewer || req.staff || '', manualId: req.manualId,
     subIdx: req.subIdx, note: String(req.note || '').slice(0, 500), done: false
   }));
   return { saved: true };
@@ -502,11 +645,16 @@ function translateManual_(req) {
 /* ========== API一覧 ========== */
 
 const PUBLIC_ACTIONS = {
-  list: () => listManuals_(false),
-  get: req => getManual_(req.id, false),
-  staff: () => readAll_('staff').filter(s => s.name && s.active !== false).map(s => String(s.name)),
-  log: req => logView_(req),
-  report: req => addReport_(req)
+  me: req => me_(req),
+  register: req => register_(req),
+  list: req => { requireViewer_(req); return listManuals_(false); },
+  get: req => { requireViewer_(req); return getManual_(req.id, false); },
+  staff: () => {
+    if (lineEnabled_()) return [];
+    return readAll_('staff').filter(s => s.name && s.active !== false).map(s => String(s.name));
+  },
+  log: req => { req._viewer = requireViewer_(req).name; return logView_(req); },
+  report: req => { req._viewer = requireViewer_(req).name; return addReport_(req); }
 };
 
 const ADMIN_ACTIONS = {
@@ -522,5 +670,8 @@ const ADMIN_ACTIONS = {
   translate: req => translateManual_(req),
   progress: () => progressReport_(),
   stepStats: req => stepStats_(req.id),
-  reports: req => listReports_(req.id)
+  reports: req => listReports_(req.id),
+  staffList: () => staffAdminList_(),
+  staffUpdate: req => staffUpdate_(req),
+  staffAdd: req => staffAdd_(req)
 };

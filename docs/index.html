@@ -9,34 +9,60 @@
 <body>
 <header class="bar">
   <h1>FLAT マニュアル</h1>
-  <a href="admin.html">管理</a>
+  <a href="admin.html" id="adminLink" class="hidden">管理</a>
 </header>
 <main>
-  <div class="card">
-    <label class="field" style="margin:0">
-      <span>あなたの名前</span>
-      <select id="staff"><option value="">読み込み中…</option></select>
-    </label>
-    <p class="muted" style="margin:6px 0 0">見た記録に使います。次回からは自動で選ばれます。</p>
-  </div>
+  <div id="gate" class="hidden"></div>
 
-  <div id="list" class="list"><p class="muted">読み込み中…</p></div>
+  <div id="content" class="hidden">
+    <!-- ブラウザで名前を選ぶ方式のとき -->
+    <div class="card hidden" id="pickCard">
+      <label class="field" style="margin:0">
+        <span>あなたの名前</span>
+        <select id="staff"></select>
+      </label>
+      <p class="muted" style="margin:6px 0 0">見た記録に使います。次回からは自動で選ばれます。</p>
+    </div>
+    <!-- LINEで本人確認できているとき -->
+    <p class="muted hidden" id="whoLine"></p>
+
+    <div id="list" class="list"><p class="muted">読み込み中…</p></div>
+  </div>
+  <p class="muted" id="loading">読み込み中…</p>
 </main>
 
 <script src="config.js"></script>
 <script src="common.js"></script>
 <script>
 (async function () {
-  const sel = document.getElementById('staff');
-  sel.addEventListener('change', () => FM.store.set('staff', sel.value));
+  const $ = id => document.getElementById(id);
+  let me;
+  try {
+    me = await FM.ready($('gate'));
+  } catch (e) {
+    $('loading').textContent = '読み込めませんでした：' + e.message;
+    return;
+  }
+  $('loading').classList.add('hidden');
+  $('content').classList.remove('hidden');
+
+  // 管理リンクは、LINEで開いたスタッフには出さない
+  if (me.mode !== 'line') $('adminLink').classList.remove('hidden');
+
+  if (me.mode === 'legacy') {
+    const sel = $('staff');
+    $('pickCard').classList.remove('hidden');
+    sel.innerHTML = '<option value="">選んでください</option>' +
+      (me.candidates || []).map(n => `<option ${n === me.name ? 'selected' : ''}>${FM.esc(n)}</option>`).join('');
+    sel.addEventListener('change', () => FM.store.set('staff', sel.value));
+  } else {
+    $('whoLine').textContent = me.mode === 'admin' ? '管理者として表示しています（記録は「管理者」になります）' : me.name + ' さん';
+    $('whoLine').classList.remove('hidden');
+  }
 
   try {
-    const [staff, list] = await Promise.all([FM.api('staff'), FM.api('list')]);
-    const saved = FM.store.get('staff', '');
-    sel.innerHTML = '<option value="">選んでください</option>' +
-      staff.map(n => `<option ${n === saved ? 'selected' : ''}>${FM.esc(n)}</option>`).join('');
-
-    const box = document.getElementById('list');
+    const list = await FM.api('list');
+    const box = $('list');
     if (!list.length) {
       box.innerHTML = '<p class="muted">公開中のマニュアルはまだありません。</p>';
       return;
@@ -47,7 +73,7 @@
         <div class="grow"><strong>${FM.esc(m.title)}</strong></div>
       </a>`).join('');
   } catch (e) {
-    document.getElementById('list').innerHTML = `<p class="muted">読み込めませんでした：${FM.esc(e.message)}</p>`;
+    $('list').innerHTML = `<p class="muted">読み込めませんでした：${FM.esc(e.message)}</p>`;
   }
 })();
 </script>
