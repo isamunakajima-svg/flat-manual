@@ -10,7 +10,8 @@
 <header class="bar">
   <a href="admin.html">‹ 管理</a>
   <h1 id="hTitle">編集</h1>
-  <button class="primary small" id="saveBtn">保存</button>
+  <button class="small" id="saveBtn">途中保存</button>
+  <button class="primary small" id="saveBackBtn">保存して戻る</button>
 </header>
 <main>
   <div id="loginBox" class="card hidden">
@@ -97,7 +98,7 @@
 
   const fmt = s => { s = Math.max(0, Number(s) || 0); return Math.floor(s / 60) + ':' + (s % 60).toFixed(1).padStart(4, '0'); };
   const now = () => (player && player.getCurrentTime) ? Math.round(player.getCurrentTime() * 10) / 10 : 0;
-  const markChanged = () => { changed = true; $('saveBtn').textContent = '保存 *'; };
+  const markChanged = () => { changed = true; $('saveBtn').textContent = '途中保存 *'; };
   window.addEventListener('beforeunload', e => { if (changed) { e.preventDefault(); e.returnValue = ''; } });
 
   FMA.requireLogin(load);
@@ -298,9 +299,9 @@
   };
 
   /* ---------- 保存・翻訳・削除 ---------- */
-  async function save() {
-    const btn = $('saveBtn');
-    btn.disabled = true;
+  async function save(goBack) {
+    const btns = [$('saveBtn'), $('saveBackBtn')];
+    btns.forEach(b => b.disabled = true);
     try {
       const ytBefore = m.youtubeId;
       m.steps.sort((a, b) => a.start - b.start);
@@ -311,16 +312,22 @@
         steps: m.steps, subs: m.subs, quiz: m.quiz.map(q => ({ question: q.question, choices: q.choices, answer: q.answer }))
       } });
       changed = false;
-      btn.textContent = '保存';
+      $('saveBtn').textContent = '途中保存';
+      if (goBack === true) {
+        FM.toast('保存しました。管理画面に戻ります');
+        setTimeout(() => { location.href = 'admin.html'; }, 800);
+        return true;
+      }
       FM.toast('保存しました');
       $('hTitle').textContent = $('title').value.trim() || m.title;
       const fresh = await FMA.adminApi('getDraft', { id: r.id });
       if (fresh.youtubeId !== ytBefore) location.reload();
       return true;
     } catch (e) { FM.toast(e.message, true); return false; }
-    finally { btn.disabled = false; }
+    finally { btns.forEach(b => b.disabled = false); }
   }
-  $('saveBtn').onclick = save;
+  $('saveBtn').onclick = () => save(false);
+  $('saveBackBtn').onclick = () => save(true);
 
   $('translateBtn').onclick = async () => {
     if (!window.confirm('日本語の手順と字幕を、ほかの言語に翻訳します。今の翻訳は上書きされます。よろしいですか？')) return;
