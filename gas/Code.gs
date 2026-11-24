@@ -7,6 +7,8 @@
  *   GEMINI_MODEL   : 使うモデル名（省略時は下の DEFAULT_MODEL）
  *   LINE_CHANNEL_ID: LIFFを作ったLINEログインチャネルのチャネルID
  *                    （入れるとLINEでの本人確認が有効になる。空なら名前を選ぶ方式のまま）
+ *   LINE_MESSAGING_TOKEN: 承認待ちの通知を送るLINE公式アカウントのチャネルアクセストークン（長期）
+ *   NOTIFY_USER_IDS : 通知を受け取る人のLINEユーザーID（staffシートの lineUserId。複数ならカンマ区切り）
  *
  * 初回は setup() を一度だけ実行すると、必要なシートが作られます。
  */
@@ -15,6 +17,7 @@ const DEFAULT_MODEL = 'gemini-3.6-flash';
 const LANGS = ['ja', 'en', 'vi'];          // 字幕・手順の言語。先頭が元の言語
 const LANG_NAMES = { ja: '日本語', en: 'English', vi: 'Tiếng Việt' };
 const GEMINI_BASE = 'https://generativelanguage.googleapis.com';
+const ADMIN_PAGE_URL = 'https://isamunakajima-svg.github.io/flat-manual/admin.html';
 
 const SHEETS = {
   manuals: ['id', 'title', 'youtubeId', 'status', 'createdAt', 'updatedAt', 'memo'],
@@ -330,8 +333,36 @@ function register_(req) {
     sh.getRange(row._row, h.indexOf('lineName') + 1).setValue(who.lineName);
     sh.getRange(row._row, h.indexOf('approved') + 1).setValue(false);
     sh.getRange(row._row, h.indexOf('registeredAt') + 1).setValue(new Date().toISOString());
+    notifyAdmins_('【FLAT マニュアル】\n' + row.name + ' さん（LINEの名前：' + (who.lineName || '不明') + '）が承認を求めています。\n\n承認はこちら\n' + ADMIN_PAGE_URL);
     return { status: 'pending', name: row.name };
   });
+}
+
+/** 管理者のLINEに通知する。設定がなければ何もしない。失敗しても登録は止めない */
+function notifyAdmins_(text) {
+  const token = prop_('LINE_MESSAGING_TOKEN');
+  const ids = String(prop_('NOTIFY_USER_IDS') || '').split(',').map(x => x.trim()).filter(x => x);
+  if (!token || !ids.length) return false;
+  try {
+    const res = UrlFetchApp.fetch('https://api.line.me/v2/bot/message/multicast', {
+      method: 'post',
+      contentType: 'application/json',
+      headers: { Authorization: 'Bearer ' + token },
+      payload: JSON.stringify({ to: ids, messages: [{ type: 'text', text: text.slice(0, 4900) }] }),
+      muteHttpExceptions: true
+    });
+    if (res.getResponseCode() !== 200) console.warn('LINE通知に失敗: ' + res.getContentText());
+    return res.getResponseCode() === 200;
+  } catch (e) {
+    console.warn('LINE通知に失敗: ' + e);
+    return false;
+  }
+}
+
+/** 通知の設定を確かめる用。エディタでこの関数を選んで「実行」すると、テストの通知が届く */
+function testNotify() {
+  const ok = notifyAdmins_('【FLAT マニュアル】通知のテストです。これが届いていれば設定はOKです。');
+  console.log(ok ? '送りました' : '送れませんでした（LINE_MESSAGING_TOKEN と NOTIFY_USER_IDS、公式アカウントを友だち追加しているかを確認してください）');
 }
 
 /* --- 管理画面からのスタッフ管理 --- */
