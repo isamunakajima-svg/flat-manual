@@ -70,8 +70,57 @@ function ensureHeaders_() {
 
 /* ========== 入口 ========== */
 
-function doGet() {
+function doGet(e) {
+  const p = (e && e.parameter) || {};
+  if (p.op === 'approve') return approveFromLink_(p.t);
   return json_({ ok: true, app: 'flat-manual' });
+}
+
+/* ========== LINEの通知の「承認する」ボタンから開くページ ========== */
+
+function htmlPage_(title, body) {
+  const html = '<div style="font-family:-apple-system,\'Hiragino Sans\',sans-serif;padding:32px 20px;max-width:480px;margin:auto;text-align:center">' +
+    '<h2 style="font-size:20px">' + title + '</h2><p style="color:#555;line-height:1.7">' + body + '</p></div>';
+  return HtmlService.createHtmlOutput(html).setTitle('FLAT マニュアル')
+    .addMetaTag('viewport', 'width=device-width, initial-scale=1');
+}
+
+function escHtml_(s) {
+  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+/** 承認リンクを作る（7日間有効、1回だけ使える） */
+function makeApproveLink_(name) {
+  const token = Utilities.getUuid().replace(/-/g, '');
+  PropertiesService.getScriptProperties().setProperty('approve_' + token,
+    JSON.stringify({ name: String(name), exp: Date.now() + 7 * 24 * 3600 * 1000 }));
+  return ScriptApp.getService().getUrl() + '?op=approve&t=' + token;
+}
+
+function approveFromLink_(token) {
+  if (!/^[0-9a-f]{32}$/.test(String(token || ''))) return htmlPage_('リンクが正しくありません', '');
+  const props = PropertiesService.getScriptProperties();
+  const raw = props.getProperty('approve_' + token);
+  if (!raw) return htmlPage_('このリンクは使えません', 'すでに使われたか、期限が切れています。管理画面から承認してください。<br><a href="' + ADMIN_PAGE_URL + '">管理画面を開く</a>');
+  const info = JSON.parse(raw);
+  if (Date.now() > info.exp) {
+    props.deleteProperty('approve_' + token);
+    return htmlPage_('期限が切れています', '管理画面から承認してください。<br><a href="' + ADMIN_PAGE_URL + '">管理画面を開く</a>');
+  }
+  const result = withLock_(() => {
+    const row = staffRows_().find(r => String(r.name) === info.name);
+    if (!row || !row.lineUserId) return 'missing';
+    if (row.active !== true) return 'inactive';
+    if (row.approved === true) return 'already';
+    sheet_('staff').getRange(row._row, SHEETS.staff.indexOf('approved') + 1).setValue(true);
+    return 'ok';
+  });
+  props.deleteProperty('approve_' + token);
+  const name = escHtml_(info.name);
+  if (result === 'ok') return htmlPage_('✅ 承認しました', name + ' さんがマニュアルを見られるようになりました。<br>この画面は閉じて大丈夫です。');
+  if (result === 'already') return htmlPage_('承認済みです', name + ' さんはすでに承認されています。');
+  if (result === 'inactive') return htmlPage_('承認できません', name + ' さんは無効になっています。管理画面で確認してください。');
+  return htmlPage_('承認できません', name + ' さんの登録が見つかりません（LINE連携が外された可能性があります）。');
 }
 
 function doPost(e) {
@@ -333,13 +382,28 @@ function register_(req) {
     sh.getRange(row._row, h.indexOf('lineName') + 1).setValue(who.lineName);
     sh.getRange(row._row, h.indexOf('approved') + 1).setValue(false);
     sh.getRange(row._row, h.indexOf('registeredAt') + 1).setValue(new Date().toISOString());
-    notifyAdmins_('【FLAT マニュアル】\n' + row.name + ' さん（LINEの名前：' + (who.lineName || '不明') + '）が承認を求めています。\n\n承認はこちら\n' + ADMIN_PAGE_URL);
+    notifyApproval_(row.name, who.lineName);
     return { status: 'pending', name: row.name };
   });
 }
 
+/** 承認待ちの通知（「承認する」ボタン付き） */
+function notifyApproval_(name, lineName) {
+  let link = '';
+  try { link = makeApproveLink_(name); } catch (e) { console.warn('承認リンクを作れませんでした: ' + e); }
+  const text = name + ' さん（LINEの名前：' + (lineName || '不明') + '）が承認を求めています。';
+  const actions = [];
+  if (link) actions.push({ type: 'uri', label: '承認する', uri: link });
+  actions.push({ type: 'uri', label: '管理画面を開く', uri: ADMIN_PAGE_URL });
+  return notifyAdmins_('【FLAT マニュアル】\n' + text + '\n\n管理画面\n' + ADMIN_PAGE_URL, {
+    type: 'template',
+    altText: '【FLAT マニュアル】' + text,
+    template: { type: 'buttons', text: ('【FLAT マニュアル】' + text).slice(0, 160), actions: actions }
+  });
+}
+
 /** 管理者のLINEに通知する。設定がなければ何もしない。失敗しても登録は止めない */
-function notifyAdmins_(text) {
+function notifyAdmins_(text, richMessage) {
   const token = prop_('LINE_MESSAGING_TOKEN');
   const ids = String(prop_('NOTIFY_USER_IDS') || '').split(',').map(x => x.trim()).filter(x => x);
   if (!token || !ids.length) return false;
@@ -348,7 +412,7 @@ function notifyAdmins_(text) {
       method: 'post',
       contentType: 'application/json',
       headers: { Authorization: 'Bearer ' + token },
-      payload: JSON.stringify({ to: ids, messages: [{ type: 'text', text: text.slice(0, 4900) }] }),
+      payload: JSON.stringify({ to: ids, messages: [richMessage || { type: 'text', text: text.slice(0, 4900) }] }),
       muteHttpExceptions: true
     });
     if (res.getResponseCode() !== 200) console.warn('LINE通知に失敗: ' + res.getContentText());
@@ -362,6 +426,12 @@ function notifyAdmins_(text) {
 /** 通知の設定を確かめる用。エディタでこの関数を選んで「実行」すると、テストの通知が届く */
 function testNotify() {
   const ok = notifyAdmins_('【FLAT マニュアル】通知のテストです。これが届いていれば設定はOKです。');
+  // ボタン付きの見た目の確認（押しても、テスト用の名前なので承認はされません）
+  notifyAdmins_('', {
+    type: 'template', altText: '【FLAT マニュアル】ボタン付き通知のテスト',
+    template: { type: 'buttons', text: '【FLAT マニュアル】ボタン付き通知のテストです',
+      actions: [{ type: 'uri', label: '管理画面を開く', uri: ADMIN_PAGE_URL }] }
+  });
   console.log(ok ? '送りました' : '送れませんでした（LINE_MESSAGING_TOKEN と NOTIFY_USER_IDS、公式アカウントを友だち追加しているかを確認してください）');
 }
 
