@@ -159,12 +159,23 @@
   });
 
   // 確認ボタン
-  document.getElementById('confirmBtn').onclick = () => {
+  document.getElementById('confirmBtn').onclick = async () => {
     if (!staff) { FM.toast('先に名前を選んでください', true); window.scrollTo({ top: 0 }); return; }
+    const btn = document.getElementById('confirmBtn');
+    btn.disabled = true;
+    btn.textContent = '記録しています…';
     track.confirmed = true;
-    logNow();
-    document.getElementById('confirmBtn').disabled = true;
-    document.getElementById('confirmMsg').textContent = '記録しました。おつかれさまでした。';
+    if (player && player.pauseVideo) player.pauseVideo();
+    try {
+      await FM.api('log', Object.assign({ sessionId, manualId: id, staff }, track, { quizScore, quizTotal }));
+      dirty = false;
+      document.getElementById('confirmMsg').textContent = '記録しました。おつかれさまでした。一覧に戻ります…';
+      setTimeout(() => { location.href = 'index.html'; }, 1200);
+    } catch (e) {
+      btn.disabled = false;
+      btn.textContent = '確認しました';
+      FM.toast('記録できませんでした。もう一度押してください', true);
+    }
   };
 
   // 字幕の報告
