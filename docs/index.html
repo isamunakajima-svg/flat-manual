@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FLAT マニュアル</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="bar">
+  <h1>FLAT マニュアル</h1>
+  <a href="admin.html">管理</a>
+</header>
+<main>
+  <div class="card">
+    <label class="field" style="margin:0">
+      <span>あなたの名前</span>
+      <select id="staff"><option value="">読み込み中…</option></select>
+    </label>
+    <p class="muted" style="margin:6px 0 0">見た記録に使います。次回からは自動で選ばれます。</p>
+  </div>
+
+  <div id="list" class="list"><p class="muted">読み込み中…</p></div>
+</main>
+
+<script src="config.js"></script>
+<script src="common.js"></script>
+<script>
+(async function () {
+  const sel = document.getElementById('staff');
+  sel.addEventListener('change', () => FM.store.set('staff', sel.value));
+
+  try {
+    const [staff, list] = await Promise.all([FM.api('staff'), FM.api('list')]);
+    const saved = FM.store.get('staff', '');
+    sel.innerHTML = '<option value="">選んでください</option>' +
+      staff.map(n => `<option ${n === saved ? 'selected' : ''}>${FM.esc(n)}</option>`).join('');
+
+    const box = document.getElementById('list');
+    if (!list.length) {
+      box.innerHTML = '<p class="muted">公開中のマニュアルはまだありません。</p>';
+      return;
+    }
+    box.innerHTML = list.map(m => `
+      <a class="item" href="view.html?id=${encodeURIComponent(m.id)}">
+        ${m.youtubeId ? `<img class="thumb" src="https://i.ytimg.com/vi/${FM.esc(m.youtubeId)}/mqdefault.jpg" alt="">` : '<div class="thumb"></div>'}
+        <div class="grow"><strong>${FM.esc(m.title)}</strong></div>
+      </a>`).join('');
+  } catch (e) {
+    document.getElementById('list').innerHTML = `<p class="muted">読み込めませんでした：${FM.esc(e.message)}</p>`;
+  }
+})();
+</script>
+</body>
+</html>

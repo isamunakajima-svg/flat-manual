@@ -1,0 +1,168 @@
+:root {
+  --bg: #f7f4ef;
+  --card: #ffffff;
+  --ink: #2b2620;
+  --sub: #7a7066;
+  --line: #e4ddd3;
+  --accent: #b5642d;
+  --accent-soft: #f6e7da;
+  --ok: #3f7d4f;
+  --ng: #b33a3a;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, "Hiragino Sans", "Noto Sans JP", sans-serif;
+  background: var(--bg);
+  color: var(--ink);
+  font-size: 16px;
+  line-height: 1.6;
+  -webkit-text-size-adjust: 100%;
+}
+
+header.bar {
+  position: sticky; top: 0; z-index: 10;
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 14px;
+  background: var(--card);
+  border-bottom: 1px solid var(--line);
+}
+header.bar h1 { font-size: 17px; margin: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+header.bar a { color: var(--accent); text-decoration: none; font-size: 15px; }
+
+main { max-width: 720px; margin: 0 auto; padding: 14px; }
+
+.card {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 14px;
+  margin-bottom: 14px;
+}
+.card h2 { font-size: 16px; margin: 0 0 10px; }
+
+.muted { color: var(--sub); font-size: 14px; }
+.row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.grow { flex: 1; min-width: 0; }
+label.row { flex-wrap: nowrap; }
+input[type=checkbox] { width: 20px; height: 20px; flex: none; margin: 0; }
+
+button, .btn {
+  appearance: none;
+  border: 1px solid var(--line);
+  background: var(--card);
+  color: var(--ink);
+  border-radius: 10px;
+  padding: 10px 14px;
+  font-size: 15px;
+  cursor: pointer;
+  text-decoration: none;
+  display: inline-block;
+}
+button.primary, .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+button.small { padding: 6px 10px; font-size: 13px; }
+button:disabled { opacity: .5; cursor: default; }
+button.danger { color: var(--ng); }
+
+input[type=text], input[type=password], input[type=url], textarea, select {
+  width: 100%;
+  font-size: 16px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #fff;
+  color: var(--ink);
+  font-family: inherit;
+}
+textarea { min-height: 90px; resize: vertical; }
+label.field { display: block; margin-bottom: 12px; }
+label.field > span { display: block; font-size: 14px; color: var(--sub); margin-bottom: 4px; }
+
+/* 一覧 */
+.list a.item {
+  display: flex; align-items: center; gap: 12px;
+  padding: 12px; margin-bottom: 10px;
+  background: var(--card); border: 1px solid var(--line); border-radius: 12px;
+  color: var(--ink); text-decoration: none;
+}
+.list img.thumb { width: 96px; height: 54px; object-fit: cover; border-radius: 6px; background: #ddd; flex: none; }
+.badge { font-size: 12px; padding: 2px 8px; border-radius: 99px; background: var(--accent-soft); color: var(--accent); white-space: nowrap; }
+.badge.draft { background: #eee; color: var(--sub); }
+
+/* 動画 */
+.player-wrap { position: relative; width: 100%; padding-top: 56.25%; background: #000; border-radius: 12px; overflow: hidden; }
+.player-wrap > div, .player-wrap > iframe { position: absolute; inset: 0; width: 100%; height: 100%; }
+
+.sub-box {
+  min-height: 3.6em;
+  margin: 10px 0 14px;
+  padding: 12px 14px;
+  background: #2b2620;
+  color: #fff;
+  border-radius: 12px;
+  font-size: 19px;
+  font-weight: 600;
+  line-height: 1.5;
+  display: flex; align-items: center; gap: 10px;
+}
+.sub-box .text { flex: 1; }
+.sub-box button { background: transparent; color: #cfc6bb; border-color: #5a524a; }
+
+.steps { list-style: none; margin: 0; padding: 0; }
+.steps li {
+  display: flex; gap: 12px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  margin-bottom: 8px;
+  background: var(--card);
+  cursor: pointer;
+}
+.steps li .num {
+  flex: none; width: 30px; height: 30px; border-radius: 50%;
+  background: var(--accent-soft); color: var(--accent);
+  display: flex; align-items: center; justify-content: center; font-weight: 700;
+}
+.steps li .t { font-weight: 700; }
+.steps li .time { color: var(--sub); font-size: 13px; margin-left: 6px; font-weight: 400; }
+.steps li .d { font-size: 15px; color: #4a4239; }
+.steps li.active { border-color: var(--accent); background: #fffaf5; box-shadow: 0 0 0 2px var(--accent-soft); }
+.steps li.active .num { background: var(--accent); color: #fff; }
+
+.progress { height: 6px; background: var(--line); border-radius: 99px; overflow: hidden; }
+.progress > div { height: 100%; background: var(--accent); width: 0; transition: width .3s; }
+
+/* テスト */
+.quiz-q { margin-bottom: 16px; }
+.quiz-q .choices button { display: block; width: 100%; text-align: left; margin-top: 6px; }
+.quiz-q .choices button.correct { border-color: var(--ok); background: #eaf4ec; }
+.quiz-q .choices button.wrong { border-color: var(--ng); background: #f8eaea; }
+
+/* 編集 */
+.edit-row { border: 1px solid var(--line); border-radius: 10px; padding: 10px; margin-bottom: 8px; background: #fff; }
+.edit-row.active { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); }
+.edit-row .time-input { width: 78px; flex: none; }
+.edit-row textarea { min-height: 54px; margin-top: 6px; }
+.edit-row input[type=text] { margin-top: 6px; }
+.tabs { display: flex; gap: 6px; margin-bottom: 12px; overflow-x: auto; }
+.tabs button.on { background: var(--ink); color: #fff; border-color: var(--ink); }
+
+/* 一覧表 */
+.table-wrap { overflow-x: auto; }
+table.grid { border-collapse: collapse; font-size: 14px; min-width: 100%; }
+table.grid th, table.grid td { border: 1px solid var(--line); padding: 6px 8px; text-align: center; white-space: nowrap; background: #fff; }
+table.grid th:first-child, table.grid td:first-child { text-align: left; position: sticky; left: 0; }
+td.done { background: #eaf4ec !important; }
+td.part { background: #fff6e8 !important; }
+
+#toast {
+  position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%) translateY(20px);
+  background: #2b2620; color: #fff; padding: 10px 16px; border-radius: 10px;
+  opacity: 0; pointer-events: none; transition: all .25s; max-width: 90vw; z-index: 50; font-size: 15px;
+}
+#toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+#toast.error { background: var(--ng); }
+
+.hidden { display: none !important; }

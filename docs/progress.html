@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>記録 - FLAT マニュアル</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="bar">
+  <a href="admin.html">‹ 管理</a>
+  <h1>誰がどこまで見たか</h1>
+</header>
+<main style="max-width:none">
+  <div id="loginBox" class="card hidden">
+    <h2>管理パスワード</h2>
+    <div class="row">
+      <input type="password" id="loginKey" class="grow" placeholder="ADMIN_KEY">
+      <button class="primary" id="loginBtn">入る</button>
+    </div>
+  </div>
+
+  <div id="adminMain" class="hidden">
+    <p class="muted">数字は一番よく見た回の「見た割合」。✓ は「確認しました」を押した人。テストは最後に受けた結果です。</p>
+    <div class="table-wrap card" style="padding:0"><div id="table" style="padding:10px">読み込み中…</div></div>
+  </div>
+</main>
+
+<script src="config.js"></script>
+<script src="common.js"></script>
+<script src="admin.js"></script>
+<script>
+FMA.requireLogin(async function () {
+  const el = document.getElementById('table');
+  try {
+    const r = await FMA.adminApi('progress');
+    if (!r.manuals.length) { el.textContent = 'マニュアルがまだありません'; return; }
+    const head = '<tr><th>名前</th>' + r.manuals.map(m => `<th>${FM.esc(m.title)}</th>`).join('') + '</tr>';
+    const names = r.staff.slice();
+    // スタッフ表にいない名前（未選択など）も出す
+    Object.keys(r.cells).forEach(k => { const n = k.split('\u0000')[0]; if (names.indexOf(n) < 0) names.push(n); });
+    const body = names.map(n => '<tr><td>' + FM.esc(n) + '</td>' + r.manuals.map(m => {
+      const c = r.cells[n + '\u0000' + m.id];
+      if (!c) return '<td class="muted">−</td>';
+      const cls = (c.completed || c.pct >= 90) ? 'done' : 'part';
+      return `<td class="${cls}">${c.pct}%${c.confirmed ? ' ✓' : ''}${c.quiz ? '<br><span class="muted">テスト ' + FM.esc(c.quiz) + '</span>' : ''}</td>`;
+    }).join('') + '</tr>').join('');
+    el.innerHTML = `<table class="grid">${head}${body}</table>`;
+  } catch (e) { el.textContent = e.message; }
+});
+</script>
+</body>
+</html>

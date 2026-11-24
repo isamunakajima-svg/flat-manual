@@ -1,0 +1,351 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>編集 - FLAT マニュアル</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="bar">
+  <a href="admin.html">‹ 管理</a>
+  <h1 id="hTitle">編集</h1>
+  <button class="primary small" id="saveBtn">保存</button>
+</header>
+<main>
+  <div id="loginBox" class="card hidden">
+    <h2>管理パスワード</h2>
+    <div class="row">
+      <input type="password" id="loginKey" class="grow" placeholder="ADMIN_KEY">
+      <button class="primary" id="loginBtn">入る</button>
+    </div>
+  </div>
+
+  <div id="adminMain" class="hidden">
+    <div class="card">
+      <label class="field"><span>タイトル</span><input type="text" id="title"></label>
+      <label class="field"><span>YouTubeのURL</span><input type="url" id="yt" placeholder="https://youtu.be/..."></label>
+      <div class="row">
+        <label class="row grow" style="gap:6px"><input type="checkbox" id="published"> 公開する（スタッフの一覧に出す）</label>
+        <a class="btn small" id="previewLink" target="_blank">表示を確認</a>
+      </div>
+    </div>
+
+    <div id="playerCard" class="hidden">
+      <div class="player-wrap"><div id="player"></div></div>
+      <div class="row" style="margin:8px 0 14px">
+        <span class="muted">今の位置 <strong id="now">0:00.0</strong></span>
+        <span class="grow"></span>
+        <button class="small" id="back2">−2秒</button>
+        <button class="small" id="fwd2">＋2秒</button>
+      </div>
+    </div>
+    <p id="noVideo" class="muted hidden">YouTubeのURLを入れて保存すると、ここに動画が出て、時間を合わせながら編集できます。</p>
+
+    <div class="row" style="margin-bottom:10px">
+      <span class="muted">編集する言語</span>
+      <select id="lang" style="width:auto"></select>
+      <span class="grow"></span>
+      <button class="small" id="translateBtn">日本語から翻訳する</button>
+    </div>
+
+    <div class="tabs">
+      <button data-tab="steps" class="on">手順</button>
+      <button data-tab="subs">字幕</button>
+      <button data-tab="quiz">テスト</button>
+      <button data-tab="reports">報告</button>
+    </div>
+
+    <section id="tab-steps">
+      <div id="stepsList"></div>
+      <button id="addStep" style="width:100%">＋ 手順を足す（今の位置から）</button>
+    </section>
+
+    <section id="tab-subs" class="hidden">
+      <div class="row" style="margin-bottom:8px">
+        <label class="row" style="gap:6px"><input type="checkbox" id="follow" checked> 再生中の字幕についていく</label>
+      </div>
+      <div id="subsList"></div>
+      <button id="addSub" style="width:100%">＋ 字幕を足す（今の位置から）</button>
+    </section>
+
+    <section id="tab-quiz" class="hidden">
+      <p class="muted">選択肢は1行に1つ。正解の番号を選んでください。テストは日本語だけです。</p>
+      <div id="quizList"></div>
+      <button id="addQuiz" style="width:100%">＋ 問題を足す</button>
+    </section>
+
+    <section id="tab-reports" class="hidden">
+      <div id="reportsList"><p class="muted">読み込み中…</p></div>
+    </section>
+
+    <div class="card" style="margin-top:24px">
+      <button class="danger" id="deleteBtn">このマニュアルを削除</button>
+    </div>
+  </div>
+</main>
+
+<script src="config.js"></script>
+<script src="common.js"></script>
+<script src="admin.js"></script>
+<script>
+(function () {
+  const $ = id => document.getElementById(id);
+  const id = FM.qs('id');
+  let m, player, YTref, lang = 'ja', baseLang = 'ja', stats = {};
+  let changed = false;
+
+  const fmt = s => { s = Math.max(0, Number(s) || 0); return Math.floor(s / 60) + ':' + (s % 60).toFixed(1).padStart(4, '0'); };
+  const now = () => (player && player.getCurrentTime) ? Math.round(player.getCurrentTime() * 10) / 10 : 0;
+  const markChanged = () => { changed = true; $('saveBtn').textContent = '保存 *'; };
+  window.addEventListener('beforeunload', e => { if (changed) { e.preventDefault(); e.returnValue = ''; } });
+
+  FMA.requireLogin(load);
+
+  async function load() {
+    try {
+      m = await FMA.adminApi('getDraft', { id });
+    } catch (e) { FM.toast(e.message, true); return; }
+    baseLang = m.langs[0];
+    lang = baseLang;
+    $('hTitle').textContent = m.title;
+    $('title').value = m.title;
+    $('yt').value = m.youtubeId ? 'https://youtu.be/' + m.youtubeId : '';
+    $('published').checked = m.status === 'published';
+    $('previewLink').href = 'view.html?id=' + encodeURIComponent(m.id);
+    $('lang').innerHTML = m.langs.map(l => `<option value="${l}">${FM.esc(m.langNames[l] || l)}</option>`).join('');
+    renderAll();
+    setupPlayer();
+    FMA.adminApi('stepStats', { id }).then(s => { stats = s || {}; renderSteps(); }).catch(() => {});
+    FMA.adminApi('reports', { id }).then(renderReports).catch(() => {});
+  }
+
+  ['title', 'yt'].forEach(k => $(k).addEventListener('input', markChanged));
+  $('published').onchange = markChanged;
+  $('lang').onchange = () => { lang = $('lang').value; renderAll(); };
+
+  // タブ
+  document.querySelectorAll('.tabs button').forEach(b => b.onclick = () => {
+    document.querySelectorAll('.tabs button').forEach(x => x.classList.toggle('on', x === b));
+    ['steps', 'subs', 'quiz', 'reports'].forEach(t => $('tab-' + t).classList.toggle('hidden', t !== b.dataset.tab));
+  });
+
+  /* ---------- 動画 ---------- */
+  async function setupPlayer() {
+    if (!m.youtubeId) { $('noVideo').classList.remove('hidden'); return; }
+    $('playerCard').classList.remove('hidden');
+    YTref = await FM.loadYouTube();
+    player = new YTref.Player('player', { videoId: m.youtubeId, playerVars: { playsinline: 1, rel: 0 } });
+    let lastS = -2, lastU = -2;
+    setInterval(() => {
+      if (!player || !player.getCurrentTime) return;
+      const t = player.getCurrentTime() || 0;
+      $('now').textContent = fmt(t);
+      const si = FM.indexAt(m.steps, t, false);
+      if (si !== lastS) { lastS = si; markActive('stepsList', si, false); }
+      const ui = FM.indexAt(m.subs, t, true);
+      if (ui !== lastU) { lastU = ui; markActive('subsList', ui, $('follow').checked && !$('tab-subs').classList.contains('hidden')); }
+    }, 300);
+  }
+  function markActive(listId, i, scroll) {
+    const rows = $(listId).querySelectorAll('.edit-row');
+    rows.forEach((r, k) => r.classList.toggle('active', k === i));
+    if (scroll && rows[i] && document.activeElement && !rows[i].contains(document.activeElement)) {
+      rows[i].scrollIntoView({ block: 'center', behavior: 'smooth' });
+    }
+  }
+  const seek = t => { if (player && player.seekTo) { player.seekTo(Math.max(0, t), true); } };
+  $('back2').onclick = () => seek(now() - 2);
+  $('fwd2').onclick = () => seek(now() + 2);
+
+  /* ---------- 表示 ---------- */
+  function renderAll() { renderSteps(); renderSubs(); renderQuiz(); }
+
+  const ref = (txt) => (lang !== baseLang && txt) ? `<div class="muted" style="font-size:13px">日本語：${FM.esc(txt)}</div>` : '';
+
+  function renderSteps() {
+    m.steps.sort((a, b) => a.start - b.start);
+    $('stepsList').innerHTML = m.steps.map((s, i) => `
+      <div class="edit-row" data-i="${i}">
+        <div class="row">
+          <strong>${i + 1}</strong>
+          <input type="text" class="time-input" data-f="start" value="${fmt(s.start)}">
+          <button class="small" data-act="now">今</button>
+          <button class="small" data-act="play">▶</button>
+          <span class="grow muted" style="font-size:13px">${stats[i] ? '見られた回数 ' + stats[i] : ''}</span>
+          <button class="small danger" data-act="del">削除</button>
+        </div>
+        ${ref(s.title[baseLang])}
+        <input type="text" data-f="title" value="${FM.esc(s.title[lang] || '')}" placeholder="見出し">
+        ${ref(s.desc[baseLang])}
+        <textarea data-f="desc" placeholder="やることとコツ">${FM.esc(s.desc[lang] || '')}</textarea>
+      </div>`).join('') || '<p class="muted">手順がありません</p>';
+  }
+
+  function renderSubs() {
+    m.subs.sort((a, b) => a.start - b.start);
+    $('subsList').innerHTML = m.subs.map((s, i) => `
+      <div class="edit-row" data-i="${i}">
+        <div class="row">
+          <input type="text" class="time-input" data-f="start" value="${fmt(s.start)}">
+          <button class="small" data-act="nowStart">今</button>
+          <span>〜</span>
+          <input type="text" class="time-input" data-f="end" value="${fmt(s.end)}">
+          <button class="small" data-act="nowEnd">今</button>
+          <button class="small" data-act="play">▶</button>
+          <span class="grow"></span>
+          <button class="small danger" data-act="del">削除</button>
+        </div>
+        ${ref(s.text[baseLang])}
+        <textarea data-f="text">${FM.esc(s.text[lang] || '')}</textarea>
+      </div>`).join('') || '<p class="muted">字幕がありません</p>';
+  }
+
+  function renderQuiz() {
+    $('quizList').innerHTML = m.quiz.map((q, i) => `
+      <div class="edit-row" data-i="${i}">
+        <div class="row"><strong>Q${i + 1}</strong><span class="grow"></span><button class="small danger" data-act="del">削除</button></div>
+        <input type="text" data-f="question" value="${FM.esc(q.question)}" placeholder="問題">
+        <textarea data-f="choices" placeholder="選択肢（1行に1つ）">${FM.esc(q.choices.join('\n'))}</textarea>
+        <div class="row" style="margin-top:6px"><span class="muted">正解</span>
+          <select data-f="answer" style="width:auto">${q.choices.map((c, k) => `<option value="${k}" ${k === q.answer ? 'selected' : ''}>${k + 1}. ${FM.esc(c)}</option>`).join('')}</select>
+        </div>
+      </div>`).join('') || '<p class="muted">問題がありません</p>';
+  }
+
+  function renderReports(list) {
+    $('reportsList').innerHTML = (list || []).length ? list.slice().reverse().map(r => {
+      const s = m.subs[Number(r.subIdx)];
+      return `<div class="edit-row">
+        <div class="muted" style="font-size:13px">${FM.esc(String(r.ts).slice(0, 16).replace('T', ' '))}　${FM.esc(r.staff)}</div>
+        ${s ? `<div class="muted" style="font-size:13px">字幕（${fmt(s.start)}）：${FM.esc(s.text[baseLang])}</div>` : ''}
+        <div>${FM.esc(r.note)}</div>
+      </div>`;
+    }).join('') : '<p class="muted">報告はありません</p>';
+  }
+
+  /* ---------- 入力の反映 ---------- */
+  function bindList(listId, arr, onField, onAct) {
+    const el = $(listId);
+    el.addEventListener('input', e => {
+      const row = e.target.closest('.edit-row'); if (!row) return;
+      const f = e.target.dataset.f; if (!f) return;
+      onField(arr()[Number(row.dataset.i)], f, e.target.value, e.target);
+      markChanged();
+    });
+    el.addEventListener('change', e => {
+      if (e.target.classList.contains('time-input')) { const row = e.target.closest('.edit-row'); if (row) { e.target.value = fmt(FM.parseTime(e.target.value)); } }
+    });
+    el.addEventListener('click', e => {
+      const b = e.target.closest('button[data-act]'); if (!b) return;
+      const row = b.closest('.edit-row');
+      const i = Number(row.dataset.i);
+      onAct(arr()[i], b.dataset.act, i, row);
+    });
+  }
+
+  bindList('stepsList', () => m.steps, (s, f, v) => {
+    if (f === 'start') s.start = FM.parseTime(v);
+    else s[f][lang] = v;
+  }, (s, act, i, row) => {
+    if (act === 'now') { s.start = now(); row.querySelector('[data-f=start]').value = fmt(s.start); markChanged(); }
+    if (act === 'play') { seek(s.start); player && player.playVideo && player.playVideo(); }
+    if (act === 'del' && confirmDel()) { m.steps.splice(i, 1); markChanged(); renderSteps(); }
+  });
+
+  bindList('subsList', () => m.subs, (s, f, v) => {
+    if (f === 'start' || f === 'end') s[f] = FM.parseTime(v);
+    else s.text[lang] = v;
+  }, (s, act, i, row) => {
+    if (act === 'nowStart') { s.start = now(); row.querySelector('[data-f=start]').value = fmt(s.start); markChanged(); }
+    if (act === 'nowEnd') { s.end = now(); row.querySelector('[data-f=end]').value = fmt(s.end); markChanged(); }
+    if (act === 'play') { seek(s.start); player && player.playVideo && player.playVideo(); }
+    if (act === 'del' && confirmDel()) { m.subs.splice(i, 1); markChanged(); renderSubs(); }
+  });
+
+  bindList('quizList', () => m.quiz, (q, f, v, el) => {
+    if (f === 'question') q.question = v;
+    if (f === 'choices') {
+      q.choices = v.split('\n').map(x => x.trim()).filter(x => x);
+      if (q.answer >= q.choices.length) q.answer = 0;
+      const sel = el.closest('.edit-row').querySelector('select');
+      sel.innerHTML = q.choices.map((c, k) => `<option value="${k}" ${k === q.answer ? 'selected' : ''}>${k + 1}. ${FM.esc(c)}</option>`).join('');
+    }
+    if (f === 'answer') q.answer = Number(v);
+  }, (q, act, i) => {
+    if (act === 'del' && confirmDel()) { m.quiz.splice(i, 1); markChanged(); renderQuiz(); }
+  });
+  // select は input が来ない端末があるので change でも拾う
+  $('quizList').addEventListener('change', e => {
+    if (e.target.dataset.f === 'answer') { m.quiz[Number(e.target.closest('.edit-row').dataset.i)].answer = Number(e.target.value); markChanged(); }
+  });
+
+  function confirmDel() { return window.confirm('削除しますか？'); }
+
+  const emptyLangs = () => { const o = {}; m.langs.forEach(l => o[l] = ''); return o; };
+  $('addStep').onclick = () => {
+    m.steps.push({ start: now(), title: emptyLangs(), desc: emptyLangs() });
+    markChanged(); renderSteps();
+  };
+  $('addSub').onclick = () => {
+    const t = now();
+    m.subs.push({ start: t, end: Math.round((t + 3) * 10) / 10, text: emptyLangs() });
+    markChanged(); renderSubs();
+  };
+  $('addQuiz').onclick = () => {
+    m.quiz.push({ question: '', choices: ['', ''], answer: 0 });
+    markChanged(); renderQuiz();
+  };
+
+  /* ---------- 保存・翻訳・削除 ---------- */
+  async function save() {
+    const btn = $('saveBtn');
+    btn.disabled = true;
+    try {
+      const ytBefore = m.youtubeId;
+      m.steps.sort((a, b) => a.start - b.start);
+      m.subs.sort((a, b) => a.start - b.start);
+      const r = await FMA.adminApi('save', { manual: {
+        id: m.id, title: $('title').value.trim() || m.title, youtubeId: $('yt').value.trim(),
+        status: $('published').checked ? 'published' : 'draft',
+        steps: m.steps, subs: m.subs, quiz: m.quiz.map(q => ({ question: q.question, choices: q.choices, answer: q.answer }))
+      } });
+      changed = false;
+      btn.textContent = '保存';
+      FM.toast('保存しました');
+      $('hTitle').textContent = $('title').value.trim() || m.title;
+      const fresh = await FMA.adminApi('getDraft', { id: r.id });
+      if (fresh.youtubeId !== ytBefore) location.reload();
+      return true;
+    } catch (e) { FM.toast(e.message, true); return false; }
+    finally { btn.disabled = false; }
+  }
+  $('saveBtn').onclick = save;
+
+  $('translateBtn').onclick = async () => {
+    if (!window.confirm('日本語の手順と字幕を、ほかの言語に翻訳します。今の翻訳は上書きされます。よろしいですか？')) return;
+    if (changed && !(await save())) return;
+    const btn = $('translateBtn');
+    btn.disabled = true; btn.textContent = '翻訳中…';
+    try {
+      await FMA.adminApi('translate', { id: m.id });
+      FM.toast('翻訳しました');
+      const fresh = await FMA.adminApi('getDraft', { id: m.id });
+      m.steps = fresh.steps; m.subs = fresh.subs;
+      renderAll();
+    } catch (e) { FM.toast(e.message, true); }
+    finally { btn.disabled = false; btn.textContent = '日本語から翻訳する'; }
+  };
+
+  $('deleteBtn').onclick = async () => {
+    if (!window.confirm('このマニュアルを削除します。元に戻せません。よろしいですか？')) return;
+    try {
+      await FMA.adminApi('remove', { id: m.id });
+      changed = false;
+      location.href = 'admin.html';
+    } catch (e) { FM.toast(e.message, true); }
+  };
+})();
+</script>
+</body>
+</html>

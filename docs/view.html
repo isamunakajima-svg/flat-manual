@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>マニュアル</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="bar">
+  <a href="index.html">‹ 一覧</a>
+  <h1 id="title">読み込み中…</h1>
+  <select id="lang" style="width:auto;padding:6px 8px;font-size:14px"></select>
+</header>
+<main>
+  <div id="whoBox" class="card hidden">
+    <label class="field" style="margin:0">
+      <span>あなたの名前を選んでください（見た記録に使います）</span>
+      <select id="staff"></select>
+    </label>
+  </div>
+
+  <div class="player-wrap"><div id="player"></div></div>
+  <div class="progress" style="margin-top:8px"><div id="bar"></div></div>
+  <p class="muted" id="watchInfo" style="margin:4px 0 0">見た割合 0%</p>
+
+  <div class="sub-box">
+    <div class="text" id="sub">&nbsp;</div>
+    <button class="small" id="reportBtn" title="字幕のまちがいを知らせる">報告</button>
+  </div>
+  <div id="reportBox" class="card hidden">
+    <label class="field"><span>どこがおかしいですか？</span><textarea id="reportNote"></textarea></label>
+    <div class="row"><button class="primary" id="reportSend">送る</button><button id="reportCancel">やめる</button></div>
+  </div>
+
+  <h2 style="font-size:16px;margin:18px 0 8px">手順</h2>
+  <ol class="steps" id="steps"></ol>
+
+  <div class="card" id="quizCard" style="margin-top:18px">
+    <h2>確認テスト</h2>
+    <div id="quiz"></div>
+    <p id="quizResult" class="muted"></p>
+  </div>
+
+  <div class="card">
+    <button class="primary" id="confirmBtn" style="width:100%">確認しました</button>
+    <p class="muted" id="confirmMsg" style="margin:8px 0 0"></p>
+  </div>
+</main>
+
+<script src="config.js"></script>
+<script src="common.js"></script>
+<script>
+(async function () {
+  const id = FM.qs('id');
+  const sessionId = FM.uid();
+  let manual, player, lang = 'ja';
+  let staff = FM.store.get('staff', '');
+
+  // 視聴の記録
+  const track = { watchedSec: 0, duration: 0, maxPos: 0, completed: false, stepViews: {}, confirmed: false };
+  let quizScore, quizTotal;
+  let lastT = null, lastStep = -1, lastSub = -2, dirty = false;
+
+  function logNow(useBeacon) {
+    if (!manual) return;
+    const params = Object.assign({ sessionId, manualId: id, staff }, track, { quizScore, quizTotal });
+    if (useBeacon) FM.beacon('log', params);
+    else FM.api('log', params).catch(() => {});
+    dirty = false;
+  }
+
+  try {
+    manual = await FM.api('get', { id });
+  } catch (e) {
+    document.getElementById('title').textContent = '開けませんでした';
+    FM.toast(e.message, true);
+    return;
+  }
+  document.title = manual.title;
+  document.getElementById('title').textContent = manual.title;
+
+  // 言語
+  const langSel = document.getElementById('lang');
+  const hasLang = l => manual.subs.some(s => s.text[l]) || manual.steps.some(s => s.title[l]);
+  const avail = manual.langs.filter((l, i) => i === 0 || hasLang(l));
+  lang = avail.indexOf(FM.store.get('lang', 'ja')) >= 0 ? FM.store.get('lang', 'ja') : avail[0];
+  langSel.innerHTML = avail.map(l => `<option value="${l}" ${l === lang ? 'selected' : ''}>${FM.esc(manual.langNames[l] || l)}</option>`).join('');
+  if (avail.length < 2) langSel.classList.add('hidden');
+  langSel.onchange = () => { lang = langSel.value; FM.store.set('lang', lang); renderSteps(); lastSub = -2; };
+  const pick = (obj) => (obj && (obj[lang] || obj[manual.langs[0]])) || '';
+
+  // 名前
+  if (!staff) {
+    const box = document.getElementById('whoBox');
+    const sel = document.getElementById('staff');
+    box.classList.remove('hidden');
+    FM.api('staff').then(list => {
+      sel.innerHTML = '<option value="">選んでください</option>' + list.map(n => `<option>${FM.esc(n)}</option>`).join('');
+    });
+    sel.onchange = () => { staff = sel.value; FM.store.set('staff', staff); if (staff) box.classList.add('hidden'); dirty = true; };
+  }
+
+  // 手順
+  const stepsEl = document.getElementById('steps');
+  function renderSteps() {
+    stepsEl.innerHTML = manual.steps.map((s, i) => `
+      <li data-i="${i}">
+        <div class="num">${i + 1}</div>
+        <div class="grow">
+          <div class="t">${FM.esc(pick(s.title))}<span class="time">${FM.fmtTime(s.start)}</span></div>
+          <div class="d">${FM.esc(pick(s.desc))}</div>
+        </div>
+      </li>`).join('');
+    highlight(lastStep, false);
+  }
+  stepsEl.addEventListener('click', e => {
+    const li = e.target.closest('li');
+    if (!li || !player || !player.seekTo) return;
+    const s = manual.steps[Number(li.dataset.i)];
+    player.seekTo(s.start, true);
+    player.playVideo();
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  });
+  function highlight(i, scroll) {
+    stepsEl.querySelectorAll('li').forEach((li, k) => li.classList.toggle('active', k === i));
+  }
+  renderSteps();
+
+  // テスト
+  const quizEl = document.getElementById('quiz');
+  if (!manual.quiz.length) document.getElementById('quizCard').classList.add('hidden');
+  const answers = {};
+  quizEl.innerHTML = manual.quiz.map((q, qi) => `
+    <div class="quiz-q" data-q="${qi}">
+      <div><strong>Q${qi + 1}.</strong> ${FM.esc(q.question)}</div>
+      <div class="choices">${q.choices.map((c, ci) => `<button data-c="${ci}">${FM.esc(c)}</button>`).join('')}</div>
+    </div>`).join('');
+  quizEl.addEventListener('click', e => {
+    const b = e.target.closest('button[data-c]');
+    if (!b) return;
+    const box = b.closest('.quiz-q');
+    const qi = Number(box.dataset.q);
+    if (answers[qi] !== undefined) return;
+    const ci = Number(b.dataset.c);
+    answers[qi] = ci;
+    const correct = manual.quiz[qi].answer;
+    box.querySelectorAll('button').forEach((x, k) => {
+      if (k === correct) x.classList.add('correct');
+      else if (k === ci) x.classList.add('wrong');
+      x.disabled = true;
+    });
+    if (Object.keys(answers).length === manual.quiz.length) {
+      quizTotal = manual.quiz.length;
+      quizScore = manual.quiz.filter((q, k) => answers[k] === q.answer).length;
+      document.getElementById('quizResult').textContent = `${quizTotal}問中 ${quizScore}問 正解`;
+      logNow();
+    }
+  });
+
+  // 確認ボタン
+  document.getElementById('confirmBtn').onclick = () => {
+    if (!staff) { FM.toast('先に名前を選んでください', true); window.scrollTo({ top: 0 }); return; }
+    track.confirmed = true;
+    logNow();
+    document.getElementById('confirmBtn').disabled = true;
+    document.getElementById('confirmMsg').textContent = '記録しました。おつかれさまでした。';
+  };
+
+  // 字幕の報告
+  const reportBox = document.getElementById('reportBox');
+  let reportIdx = -1;
+  document.getElementById('reportBtn').onclick = () => {
+    reportIdx = lastSub;
+    if (player && player.pauseVideo) player.pauseVideo();
+    reportBox.classList.remove('hidden');
+    document.getElementById('reportNote').focus();
+  };
+  document.getElementById('reportCancel').onclick = () => reportBox.classList.add('hidden');
+  document.getElementById('reportSend').onclick = async () => {
+    const note = document.getElementById('reportNote').value.trim();
+    if (!note) return;
+    try {
+      await FM.api('report', { manualId: id, staff, subIdx: reportIdx, note });
+      FM.toast('送りました。ありがとうございます');
+      document.getElementById('reportNote').value = '';
+      reportBox.classList.add('hidden');
+    } catch (e) { FM.toast(e.message, true); }
+  };
+
+  // 動画
+  if (!manual.youtubeId) {
+    document.getElementById('player').outerHTML = '<div style="color:#fff;display:flex;align-items:center;justify-content:center">動画がまだ登録されていません</div>';
+    return;
+  }
+  const YT = await FM.loadYouTube();
+  player = new YT.Player('player', {
+    videoId: manual.youtubeId,
+    playerVars: { playsinline: 1, rel: 0, modestbranding: 1, cc_load_policy: 0 },
+    events: {
+      onStateChange: ev => {
+        if (ev.data === YT.PlayerState.PAUSED || ev.data === YT.PlayerState.ENDED) logNow();
+      }
+    }
+  });
+
+  const subEl = document.getElementById('sub');
+  setInterval(() => {
+    if (!player || !player.getCurrentTime) return;
+    const t = player.getCurrentTime() || 0;
+    const playing = player.getPlayerState && player.getPlayerState() === YT.PlayerState.PLAYING;
+    track.duration = player.getDuration() || track.duration;
+
+    if (playing && lastT !== null) {
+      const d = t - lastT;
+      if (d > 0 && d <= 1.5) { track.watchedSec += d; dirty = true; } // 飛ばした分は数えない
+    }
+    lastT = t;
+    track.maxPos = Math.max(track.maxPos, t);
+    if (track.duration && track.watchedSec >= track.duration * 0.9 && !track.completed) {
+      track.completed = true; dirty = true; logNow();
+    }
+
+    const si = FM.indexAt(manual.steps, t, false);
+    if (si !== lastStep) {
+      if (playing && si >= 0) { track.stepViews[si] = (track.stepViews[si] || 0) + 1; dirty = true; }
+      lastStep = si;
+      highlight(si, true);
+    }
+    const ui = FM.indexAt(manual.subs, t, true);
+    if (ui !== lastSub) {
+      lastSub = ui;
+      subEl.textContent = ui >= 0 ? pick(manual.subs[ui].text) : ' ';
+    }
+
+    const pct = track.duration ? Math.min(100, Math.round(track.watchedSec / track.duration * 100)) : 0;
+    document.getElementById('bar').style.width = pct + '%';
+    document.getElementById('watchInfo').textContent = '見た割合 ' + pct + '%' + (track.completed ? '（最後まで見ました）' : '');
+  }, 500);
+
+  setInterval(() => { if (dirty) logNow(); }, 15000);
+  window.addEventListener('pagehide', () => logNow(true));
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden' && dirty) logNow(true); });
+})();
+</script>
+</body>
+</html>

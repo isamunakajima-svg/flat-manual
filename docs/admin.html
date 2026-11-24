@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>管理 - FLAT マニュアル</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="bar">
+  <a href="index.html">‹ 一覧</a>
+  <h1>管理</h1>
+  <a href="progress.html">記録を見る</a>
+</header>
+<main>
+  <div id="loginBox" class="card hidden">
+    <h2>管理パスワード</h2>
+    <div class="row">
+      <input type="password" id="loginKey" class="grow" placeholder="ADMIN_KEY">
+      <button class="primary" id="loginBtn">入る</button>
+    </div>
+  </div>
+
+  <div id="adminMain" class="hidden">
+    <!-- 新規作成 -->
+    <div class="card">
+      <h2>新しいマニュアルを作る</h2>
+      <label class="field"><span>タイトル（空ならAIが付けます）</span><input type="text" id="newTitle"></label>
+      <label class="field"><span>YouTubeのURL（あとからでもOK）</span><input type="url" id="newYt" placeholder="https://youtu.be/..."></label>
+      <label class="field"><span>動画ファイル（YouTubeに上げたものと同じ動画）</span><input type="file" id="newVideo" accept="video/*"></label>
+      <p class="muted" id="videoInfo"></p>
+
+      <label class="field"><span>字幕の作り方</span>
+        <select id="newMode">
+          <option value="speech">話しながら撮った（声を字幕にする）</option>
+          <option value="memo">無言で撮った（映像＋メモから作る）</option>
+          <option value="voiceover">あとから声を入れる（アフレコ）</option>
+        </select>
+      </label>
+
+      <label class="field" id="memoField"><span>作業メモ（コツや数値など。なくてもOK）</span>
+        <textarea id="newMemo" placeholder="例：三つ折り→とじ目を下→手のひらで転がす（力は弱め）"></textarea>
+      </label>
+
+      <div id="voBox" class="hidden" style="margin-bottom:12px">
+        <video id="voVideo" playsinline muted style="width:100%;border-radius:10px;background:#000"></video>
+        <div class="row" style="margin-top:8px">
+          <button id="voStart">録音しながら再生</button>
+          <button id="voStop" disabled>止める</button>
+          <span class="muted" id="voInfo">動画ファイルを選ぶと録音できます</span>
+        </div>
+        <audio id="voPlay" controls class="hidden" style="width:100%;margin-top:8px"></audio>
+      </div>
+
+      <button class="primary" id="genBtn" style="width:100%">AIで下書きを作る</button>
+      <div class="progress" style="margin-top:10px"><div id="genBar"></div></div>
+      <p class="muted" id="genMsg"></p>
+    </div>
+
+    <!-- 一覧 -->
+    <div class="card">
+      <h2>マニュアル一覧</h2>
+      <div id="allList" class="list"><p class="muted">読み込み中…</p></div>
+    </div>
+
+    <p class="muted"><button class="small" id="logoutBtn">この端末からパスワードを消す</button></p>
+  </div>
+</main>
+
+<script src="config.js"></script>
+<script src="common.js"></script>
+<script src="admin.js"></script>
+<script>
+(function () {
+  const $ = id => document.getElementById(id);
+
+  async function loadList() {
+    try {
+      const list = await FMA.adminApi('listAll');
+      $('allList').innerHTML = list.length ? list.map(m => `
+        <a class="item" href="edit.html?id=${encodeURIComponent(m.id)}">
+          ${m.youtubeId ? `<img class="thumb" src="https://i.ytimg.com/vi/${FM.esc(m.youtubeId)}/mqdefault.jpg" alt="">` : '<div class="thumb"></div>'}
+          <div class="grow"><strong>${FM.esc(m.title)}</strong></div>
+          <span class="badge ${m.status === 'published' ? '' : 'draft'}">${m.status === 'published' ? '公開中' : '下書き'}</span>
+        </a>`).join('') : '<p class="muted">まだありません</p>';
+    } catch (e) { $('allList').innerHTML = `<p class="muted">${FM.esc(e.message)}</p>`; }
+  }
+
+  FMA.requireLogin(loadList);
+  $('logoutBtn').onclick = () => { FM.store.remove('adminKey'); location.reload(); };
+
+  // 作り方の切り替え
+  const syncMode = () => {
+    const m = $('newMode').value;
+    $('voBox').classList.toggle('hidden', m !== 'voiceover');
+    $('memoField').querySelector('span').textContent =
+      m === 'memo' ? '作業メモ（コツや数値など。短くてOK）' : '補足メモ（なくてもOK）';
+  };
+  $('newMode').onchange = syncMode;
+  syncMode();
+
+  // 動画を選んだとき
+  let videoUrl = null;
+  $('newVideo').onchange = () => {
+    const f = $('newVideo').files[0];
+    if (!f) return;
+    const mb = f.size / 1024 / 1024;
+    $('videoInfo').textContent = `${f.name}（${mb.toFixed(0)}MB）` +
+      (mb > 300 ? '　大きいので時間がかかります。720p・5分以内がおすすめです' : '');
+    if (videoUrl) URL.revokeObjectURL(videoUrl);
+    videoUrl = URL.createObjectURL(f);
+    $('voVideo').src = videoUrl;
+    $('voInfo').textContent = '「録音しながら再生」で、動画を見ながら説明を吹き込めます';
+  };
+
+  // アフレコの録音
+  let recorder = null, chunks = [], voiceBlob = null, stream = null;
+  $('voStart').onclick = async () => {
+    if (!videoUrl) { FM.toast('先に動画ファイルを選んでください', true); return; }
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    } catch (e) { FM.toast('マイクが使えません：' + e.message, true); return; }
+    chunks = [];
+    recorder = new MediaRecorder(stream);
+    recorder.ondataavailable = e => { if (e.data.size) chunks.push(e.data); };
+    recorder.onstop = () => {
+      stream.getTracks().forEach(t => t.stop());
+      voiceBlob = new Blob(chunks, { type: recorder.mimeType || 'audio/mp4' });
+      $('voPlay').src = URL.createObjectURL(voiceBlob);
+      $('voPlay').classList.remove('hidden');
+      $('voInfo').textContent = '録音できました。やり直すときはもう一度「録音しながら再生」';
+      $('voStart').disabled = false; $('voStop').disabled = true;
+    };
+    const v = $('voVideo');
+    v.currentTime = 0;
+    recorder.start();
+    await v.play();
+    $('voStart').disabled = true; $('voStop').disabled = false;
+    $('voInfo').textContent = '録音中…（動画が終わると自動で止まります）';
+  };
+  const stopRec = () => { if (recorder && recorder.state === 'recording') { recorder.stop(); $('voVideo').pause(); } };
+  $('voStop').onclick = stopRec;
+  $('voVideo').onended = stopRec;
+
+  // 下書きを作る
+  $('genBtn').onclick = async () => {
+    const f = $('newVideo').files[0];
+    const mode = $('newMode').value;
+    if (!f) { FM.toast('動画ファイルを選んでください', true); return; }
+    if (mode === 'voiceover' && !voiceBlob) { FM.toast('先に録音してください', true); return; }
+    const btn = $('genBtn');
+    btn.disabled = true;
+    const prog = (p, msg) => { $('genBar').style.width = Math.round(p * 100) + '%'; $('genMsg').textContent = msg; };
+    try {
+      const video = await FMA.uploadToGemini(f, '動画', (p, m) => prog(p * 0.7, m));
+      let audio = null;
+      if (mode === 'voiceover') {
+        prog(0.72, '録音を変換しています…');
+        const wav = await FMA.toWav(voiceBlob);
+        audio = await FMA.uploadToGemini(wav, '録音', (p, m) => prog(0.72 + p * 0.1, m));
+      }
+      prog(0.85, 'AIが字幕と手順の下書きを作っています…（1〜2分かかることがあります）');
+      const r = await FMA.adminApi('generate', {
+        title: $('newTitle').value.trim(),
+        youtubeId: $('newYt').value.trim(),
+        mode, memo: $('newMemo').value.trim(), video, audio
+      });
+      prog(1, 'できました。編集画面を開きます');
+      location.href = 'edit.html?id=' + encodeURIComponent(r.id);
+    } catch (e) {
+      FM.toast(e.message, true);
+      $('genMsg').textContent = 'エラー：' + e.message;
+      btn.disabled = false;
+    }
+  };
+})();
+</script>
+</body>
+</html>
