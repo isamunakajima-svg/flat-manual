@@ -20,7 +20,7 @@ const GEMINI_BASE = 'https://generativelanguage.googleapis.com';
 const ADMIN_PAGE_URL = 'https://isamunakajima-svg.github.io/flat-manual/admin.html';
 
 const SHEETS = {
-  manuals: ['id', 'title', 'youtubeId', 'status', 'createdAt', 'updatedAt', 'memo'],
+  manuals: ['id', 'title', 'youtubeId', 'status', 'createdAt', 'updatedAt', 'memo', 'note'],
   steps: ['manualId', 'idx', 'start'].concat(flatLang_(['title', 'desc'])),
   subs: ['manualId', 'idx', 'start', 'end'].concat(LANGS.map(l => 'text_' + l)),
   quiz: ['manualId', 'idx', 'question', 'choices', 'answer'],
@@ -58,7 +58,7 @@ function setup() {
 /** 列が増えたときに見出しだけ追加する（setup をやり直さなくても動くように） */
 function ensureHeaders_() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
-  ['staff', 'logs'].forEach(name => {
+  ['staff', 'logs', 'manuals'].forEach(name => {
     const sh = ss.getSheetByName(name);
     if (!sh) return;
     const header = SHEETS[name];
@@ -204,7 +204,7 @@ function withLock_(fn) {
 function listManuals_(includeDrafts) {
   return readAll_('manuals')
     .filter(m => m.id && (includeDrafts || m.status === 'published'))
-    .map(m => ({ id: String(m.id), title: m.title, youtubeId: m.youtubeId, status: m.status, updatedAt: m.updatedAt }))
+    .map(m => ({ id: String(m.id), title: m.title, youtubeId: m.youtubeId, status: m.status, updatedAt: m.updatedAt, note: m.note || '' }))
     .sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
 }
 
@@ -229,7 +229,7 @@ function getManual_(id, includeDrafts) {
     answer: Number(r.answer) || 0
   }));
   return {
-    id: String(m.id), title: m.title, youtubeId: m.youtubeId, status: m.status, memo: m.memo,
+    id: String(m.id), title: m.title, youtubeId: m.youtubeId, status: m.status, memo: m.memo, note: m.note || '',
     steps: steps, subs: subs, quiz: quiz, langs: LANGS, langNames: LANG_NAMES
   };
 }
@@ -250,6 +250,7 @@ function saveManual_(m) {
       youtubeId: m.youtubeId !== undefined ? parseYoutubeId_(m.youtubeId) : base.youtubeId,
       status: m.status || base.status || 'draft',
       memo: m.memo !== undefined ? m.memo : base.memo,
+      note: m.note !== undefined ? m.note : (base.note || ''),
       updatedAt: now
     });
     const row = rowFrom_('manuals', rec);
@@ -274,6 +275,7 @@ function saveManual_(m) {
 }
 
 function deleteManual_(id) {
+  PropertiesService.getScriptProperties().deleteProperty('job_' + id);
   return withLock_(() => {
     ['steps', 'subs', 'quiz'].forEach(n => replaceRows_(n, id, []));
     const sh = sheet_('manuals');
@@ -357,6 +359,8 @@ function requireViewer_(req) {
 function me_(req) {
   const me = identify_(req);
   const out = { status: me.status, name: me.name || '', lineName: me.lineName || '', mode: me.admin ? 'admin' : (me.legacy ? 'legacy' : 'line') };
+  const notifyIds = String(prop_('NOTIFY_USER_IDS') || '').split(',').map(x => x.trim());
+  out.canEdit = !!me.admin || (me.status === 'ok' && !!me.userId && notifyIds.indexOf(me.userId) >= 0);
   if (me.status === 'unregistered') {
     out.candidates = staffRows_().filter(r => r.active === true && !r.lineUserId).map(r => String(r.name));
   }
@@ -712,7 +716,94 @@ function generateDraft_(req) {
     youtubeId: req.youtubeId || '',
     status: 'draft',
     memo: req.memo || '',
+    note: '',
     steps: steps, subs: subs, quiz: quiz
+  });
+}
+
+/* ========== 下書きを裏で作る（画面を閉じても進む） ========== */
+
+/** 動画を送り終わったら呼ぶ。マニュアルを「作成中」で作り、タイマーで続きをやる */
+function queueDraft_(req) {
+  if (!req.video || !req.video.name) throw new Error('動画がありません');
+  const saved = saveManual_({
+    title: req.title || '（作成中）', youtubeId: req.youtubeId || '', status: 'processing',
+    memo: req.memo || '', note: 'AIが下書きを作っています'
+  });
+  const job = {
+    id: saved.id, title: req.title || '', youtubeId: req.youtubeId || '', mode: req.mode,
+    memo: String(req.memo || '').slice(0, 3000), video: req.video, audio: req.audio || null,
+    queuedAt: Date.now(), tries: 0
+  };
+  PropertiesService.getScriptProperties().setProperty('job_' + saved.id, JSON.stringify(job));
+  scheduleJobs_(5);
+  return { id: saved.id, queued: true };
+}
+
+function scheduleJobs_(seconds) {
+  const exists = ScriptApp.getProjectTriggers().some(t => t.getHandlerFunction() === 'processJobs');
+  if (!exists) ScriptApp.newTrigger('processJobs').timeBased().after(seconds * 1000).create();
+}
+
+/** タイマーから呼ばれる。待っている下書きを順に作る */
+function processJobs() {
+  ScriptApp.getProjectTriggers().filter(t => t.getHandlerFunction() === 'processJobs')
+    .forEach(t => ScriptApp.deleteTrigger(t));
+  const props = PropertiesService.getScriptProperties();
+  const all = props.getProperties();
+  const started = Date.now();
+  let waiting = false;
+  Object.keys(all).filter(k => k.indexOf('job_') === 0).forEach(key => {
+    if (Date.now() - started > 4 * 60 * 1000) { waiting = true; return; } // 時間切れ前に次回へ回す
+    const job = JSON.parse(all[key]);
+    try {
+      // Geminiの読み込みが終わっているか
+      const files = [job.video].concat(job.audio ? [job.audio] : []);
+      for (const f of files) {
+        const st = fileStatus_({ name: f.name });
+        if (st.state === 'FAILED') throw new Error('動画の読み込みに失敗しました（形式が合わない可能性があります）');
+        if (st.state !== 'ACTIVE') {
+          if (Date.now() - job.queuedAt > 30 * 60 * 1000) throw new Error('動画の読み込みが30分たっても終わりませんでした');
+          waiting = true;
+          return;
+        }
+        f.uri = st.uri || f.uri;
+        f.mimeType = st.mimeType || f.mimeType;
+      }
+      generateDraft_({
+        id: job.id, title: job.title, youtubeId: job.youtubeId, mode: job.mode, memo: job.memo,
+        video: job.video, audio: job.audio
+      });
+      props.deleteProperty(key);
+      const m = readAll_('manuals').find(r => String(r.id) === String(job.id)) || {};
+      notifyDone_(job.id, m.title || job.title, '');
+    } catch (err) {
+      const msg = String(err && err.message || err);
+      job.tries = (job.tries || 0) + 1;
+      // 回数上限などの一時的なエラーは、3回まで時間をおいてやり直す
+      if (job.tries < 3 && /回数上限|429|500|503|timed out|タイムアウト/i.test(msg)) {
+        props.setProperty(key, JSON.stringify(job));
+        waiting = true;
+        return;
+      }
+      props.deleteProperty(key);
+      saveManual_({ id: job.id, status: 'error', note: msg.slice(0, 300) });
+      notifyDone_(job.id, job.title || '（タイトルなし）', msg);
+    }
+  });
+  if (waiting) scheduleJobs_(60);
+}
+
+/** 下書きができた（または失敗した）ことをLINEで知らせる */
+function notifyDone_(id, title, errorMsg) {
+  const editUrl = ADMIN_PAGE_URL.replace('admin.html', 'edit.html') + '?id=' + encodeURIComponent(id);
+  const text = errorMsg
+    ? '【FLAT マニュアル】「' + title + '」の下書きを作れませんでした。\n' + errorMsg
+    : '【FLAT マニュアル】「' + title + '」の下書きができました。確認して公開してください。';
+  notifyAdmins_(text, {
+    type: 'template', altText: text.slice(0, 400),
+    template: { type: 'buttons', text: text.slice(0, 160),
+      actions: [{ type: 'uri', label: errorMsg ? '管理画面を開く' : '編集する', uri: errorMsg ? ADMIN_PAGE_URL : editUrl }] }
   });
 }
 
@@ -768,6 +859,7 @@ const ADMIN_ACTIONS = {
   uploadChunk: req => uploadChunk_(req),
   fileStatus: req => fileStatus_(req),
   generate: req => generateDraft_(req),
+  queue: req => queueDraft_(req),
   translate: req => translateManual_(req),
   progress: () => progressReport_(),
   stepStats: req => stepStats_(req.id),

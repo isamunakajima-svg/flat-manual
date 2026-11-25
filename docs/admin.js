@@ -50,7 +50,8 @@
    * ファイルを分割してGASに送り、GASからGeminiに渡す。
    * onProgress(0〜1, メッセージ)
    */
-  async function uploadToGemini(file, label, onProgress) {
+  async function uploadToGemini(file, label, onProgress, opts) {
+    opts = opts || {};
     const mimeType = file.mimeType || geminiMime(file);
     const start = await adminApi('uploadStart', { size: file.size, mimeType, name: label });
     const gran = start.granularity || 8388608;
@@ -65,6 +66,7 @@
       if (last) info = r;
       offset = end;
     }
+    if (opts.noWait) return { name: info.name, uri: info.uri, mimeType: info.mimeType || mimeType }; // 読み込み待ちはGAS側でする
     onProgress && onProgress(1, `${label}をAIが読み込んでいます…`);
     for (let i = 0; i < 90; i++) {
       if (info.state === 'ACTIVE') return { uri: info.uri, mimeType: info.mimeType || mimeType };

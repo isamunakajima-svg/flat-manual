@@ -10,6 +10,7 @@
 <header class="bar">
   <a href="index.html">‹ 一覧</a>
   <h1 id="title">読み込み中…</h1>
+  <a id="editLink" class="hidden" style="font-size:14px">編集</a>
   <select id="lang" style="width:auto;padding:6px 8px;font-size:14px"></select>
 </header>
 <main>
@@ -82,6 +83,11 @@
   }
   staff = me.name || '';
   document.getElementById('content').classList.remove('hidden');
+  if (me.canEdit) {
+    const el = document.getElementById('editLink');
+    el.href = 'edit.html?id=' + encodeURIComponent(id);
+    el.classList.remove('hidden');
+  }
 
   try {
     manual = await FM.api('get', { id });

@@ -23,6 +23,7 @@
   </div>
 
   <div id="adminMain" class="hidden">
+    <div id="statusNote" class="card hidden" style="border-color:#e8c9a8;background:#fffaf5"></div>
     <div class="card">
       <label class="field"><span>タイトル</span><input type="text" id="title"></label>
       <label class="field"><span>YouTubeのURL</span><input type="url" id="yt" placeholder="https://youtu.be/..."></label>
@@ -113,6 +114,12 @@
     $('title').value = m.title;
     $('yt').value = m.youtubeId ? 'https://youtu.be/' + m.youtubeId : '';
     $('published').checked = m.status === 'published';
+    if (m.status === 'processing' || m.status === 'error') {
+      $('statusNote').innerHTML = m.status === 'processing'
+        ? '<strong>AIが下書きを作っています。</strong><br><span class="muted">できたらLINEでお知らせします。少し待ってから開き直してください。</span>'
+        : '<strong>下書きを作れませんでした。</strong><br><span class="muted">' + FM.esc(m.note || '') + '<br>動画を選び直して、新しく作り直してください。これは下の「削除」で消せます。</span>';
+      $('statusNote').classList.remove('hidden');
+    }
     $('previewLink').href = 'view.html?id=' + encodeURIComponent(m.id);
     $('lang').innerHTML = m.langs.map(l => `<option value="${l}">${FM.esc(m.langNames[l] || l)}</option>`).join('');
     renderAll();

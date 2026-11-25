@@ -53,6 +53,7 @@
       </div>
 
       <button class="primary" id="genBtn" style="width:100%">AIで下書きを作る</button>
+      <p class="muted" style="margin:6px 0 0">動画を送り終わるまでは画面を開いたままにしてください。送り終われば閉じても大丈夫です。</p>
       <div class="progress" style="margin-top:10px"><div id="genBar"></div></div>
       <p class="muted" id="genMsg"></p>
     </div>
@@ -88,12 +89,22 @@
   async function loadList() {
     try {
       const list = await FMA.adminApi('listAll');
+      const badge = {
+        published: '<span class="badge">公開中</span>',
+        draft: '<span class="badge draft">下書き</span>',
+        processing: '<span class="badge" style="background:#fff6e8;color:#b5642d">作成中…</span>',
+        error: '<span class="badge" style="background:#f8eaea;color:#b33a3a">エラー</span>'
+      };
       $('allList').innerHTML = list.length ? list.map(m => `
         <a class="item" href="edit.html?id=${encodeURIComponent(m.id)}">
           ${m.youtubeId ? `<img class="thumb" src="https://i.ytimg.com/vi/${FM.esc(m.youtubeId)}/mqdefault.jpg" alt="">` : '<div class="thumb"></div>'}
-          <div class="grow"><strong>${FM.esc(m.title)}</strong></div>
-          <span class="badge ${m.status === 'published' ? '' : 'draft'}">${m.status === 'published' ? '公開中' : '下書き'}</span>
+          <div class="grow"><strong>${FM.esc(m.title)}</strong>
+            ${m.note ? `<div class="muted" style="font-size:13px">${FM.esc(m.note)}</div>` : ''}</div>
+          ${badge[m.status] || badge.draft}
         </a>`).join('') : '<p class="muted">まだありません</p>';
+      // 作成中のものがあれば、しばらくして一覧を読み直す
+      clearTimeout(window._listTimer);
+      if (list.some(m => m.status === 'processing')) window._listTimer = setTimeout(loadList, 20000);
     } catch (e) { $('allList').innerHTML = `<p class="muted">${FM.esc(e.message)}</p>`; }
   }
 
@@ -203,21 +214,26 @@
     btn.disabled = true;
     const prog = (p, msg) => { $('genBar').style.width = Math.round(p * 100) + '%'; $('genMsg').textContent = msg; };
     try {
-      const video = await FMA.uploadToGemini(f, '動画', (p, m) => prog(p * 0.7, m));
+      const video = await FMA.uploadToGemini(f, '動画', (p, m) => prog(p * 0.8, m), { noWait: true });
       let audio = null;
       if (mode === 'voiceover') {
-        prog(0.72, '録音を変換しています…');
+        prog(0.8, '録音を変換しています…');
         const wav = await FMA.toWav(voiceBlob);
-        audio = await FMA.uploadToGemini(wav, '録音', (p, m) => prog(0.72 + p * 0.1, m));
+        audio = await FMA.uploadToGemini(wav, '録音', (p, m) => prog(0.8 + p * 0.08, m), { noWait: true });
       }
-      prog(0.85, 'AIが字幕と手順の下書きを作っています…（1〜2分かかることがあります）');
-      const r = await FMA.adminApi('generate', {
+      prog(0.9, '受付しています…');
+      await FMA.adminApi('queue', {
         title: $('newTitle').value.trim(),
         youtubeId: $('newYt').value.trim(),
         mode, memo: $('newMemo').value.trim(), video, audio
       });
-      prog(1, 'できました。編集画面を開きます');
-      location.href = 'edit.html?id=' + encodeURIComponent(r.id);
+      prog(1, '受け付けました。AIが裏で下書きを作ります。できたらLINEでお知らせするので、この画面は閉じて大丈夫です。');
+      FM.toast('受け付けました。閉じて大丈夫です');
+      ['newTitle', 'newYt', 'newMemo'].forEach(k => $(k).value = '');
+      $('newVideo').value = ''; $('videoInfo').textContent = '';
+      voiceBlob = null; $('voPlay').classList.add('hidden');
+      btn.disabled = false;
+      loadList();
     } catch (e) {
       FM.toast(e.message, true);
       $('genMsg').textContent = 'エラー：' + e.message;
