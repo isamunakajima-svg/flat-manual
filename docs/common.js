@@ -131,14 +131,19 @@
    * 見てよいときは { name, mode } を返す。名前選び・承認待ち・閲覧不可のときは gate に案内を出して止まる。
    * mode: 'line'（LINEで本人確認）/ 'legacy'（画面で名前を選ぶ）/ 'admin'（管理パスワードのある端末）
    */
+  // LINEでログインしてIDトークンを持つ（LIFF_ID が無ければ何もしない）
+  async function lineLogin() {
+    if (!LIFF_ID) return false;
+    await loadScript('https://static.line-scdn.net/liff/edge/2/sdk.js');
+    await liff.init({ liffId: LIFF_ID });
+    if (new URLSearchParams(location.search).has('liff.state')) await new Promise(() => {}); // LIFFが目的のページへ移動中
+    if (!liff.isLoggedIn()) { liff.login({ redirectUri: location.href }); await new Promise(() => {}); }
+    auth.idToken = liff.getIDToken() || '';
+    return true;
+  }
+
   async function ready(gateEl) {
-    if (LIFF_ID && !store.get('adminKey', '')) {
-      await loadScript('https://static.line-scdn.net/liff/edge/2/sdk.js');
-      await liff.init({ liffId: LIFF_ID });
-      if (new URLSearchParams(location.search).has('liff.state')) await new Promise(() => {}); // LIFFが目的のページへ移動中
-      if (!liff.isLoggedIn()) { liff.login({ redirectUri: location.href }); await new Promise(() => {}); }
-      auth.idToken = liff.getIDToken() || '';
-    }
+    if (LIFF_ID && !store.get('adminKey', '')) await lineLogin();
     const me = await api('me');
     auth.mode = me.mode;
     if (me.status === 'ok') {
@@ -174,5 +179,15 @@
     await new Promise(() => {});
   }
 
-  window.FM = { api, beacon, store, fmtTime, parseTime, esc, qs, uid, toast, loadYouTube, indexAt, ready, auth };
+    // タグを「#クロワッサン #成形」の形で表示
+  function tagsHtml(tags) {
+    return (tags || []).map(t => `<span class="tag" data-tag="${esc(t)}">#${esc(t)}</span>`).join('');
+  }
+  function parseTags(str) {
+    const out = [];
+    String(str || '').split(/[\s,、，#＃]+/).map(t => t.trim()).filter(t => t).forEach(t => { if (out.indexOf(t) < 0) out.push(t); });
+    return out;
+  }
+
+  window.FM = { api, beacon, store, fmtTime, parseTime, esc, qs, uid, toast, loadYouTube, indexAt, ready, lineLogin, auth, tagsHtml, parseTags, LIFF_ID };
 })();

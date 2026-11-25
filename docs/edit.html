@@ -20,15 +20,30 @@
       <input type="password" id="loginKey" class="grow" placeholder="ADMIN_KEY">
       <button class="primary" id="loginBtn">入る</button>
     </div>
+    <p class="muted" id="loginNote" style="margin:8px 0 0">店舗責任者の方は、LINEのマニュアルから「管理」を開いてください。</p>
   </div>
 
   <div id="adminMain" class="hidden">
     <div id="statusNote" class="card hidden" style="border-color:#e8c9a8;background:#fffaf5"></div>
+    <div id="driveNote" class="card hidden" style="border-color:#b9cde8;background:#f5f9ff">
+      <strong>この動画はまだYouTubeに上がっていません。</strong>
+      <p class="muted" style="margin:6px 0 10px">管理者がGoogleドライブの動画をYouTube（FLAT マニュアル）に限定公開で上げて、下の「YouTubeのURL」に入れてください。URLを入れて保存すると、ドライブの動画は自動でゴミ箱に移ります。</p>
+      <a class="btn small admin-only" id="driveLink" target="_blank">ドライブの動画を開く</a>
+    </div>
+    <!-- 公開申請・確認 -->
+    <div id="reviewBox" class="card hidden"></div>
     <div class="card">
       <label class="field"><span>タイトル</span><input type="text" id="title"></label>
       <label class="field"><span>YouTubeのURL</span><input type="url" id="yt" placeholder="https://youtu.be/..."></label>
+      <div class="filters" style="margin:0 0 12px">
+        <label><span class="muted" style="font-size:14px">店舗</span><select id="store"></select></label>
+        <label><span class="muted" style="font-size:14px">フォルダ（新しく作るなら入力）</span><input type="text" id="folder" list="folderList"></label>
+      </div>
+      <datalist id="folderList"></datalist>
+      <label class="field"><span>タグ（スペースで区切る）</span><input type="text" id="tags" placeholder="例：#クロワッサン #成形"></label>
       <div class="row">
-        <label class="row grow" style="gap:6px"><input type="checkbox" id="published"> 公開する（スタッフの一覧に出す）</label>
+        <label class="row grow admin-only" style="gap:6px"><input type="checkbox" id="published"> 公開する（スタッフの一覧に出す）</label>
+        <span class="grow editor-only muted" id="editorStatus" style="font-size:14px"></span>
         <a class="btn small" id="previewLink" target="_blank">表示を確認</a>
       </div>
     </div>
@@ -104,16 +119,35 @@
 
   FMA.requireLogin(load);
 
-  async function load() {
+  async function load(actor) {
+    let meta = { stores: [], folders: [] };
     try {
-      m = await FMA.adminApi('getDraft', { id });
+      [m, meta] = await Promise.all([FMA.adminApi('getDraft', { id }), FMA.adminApi('meta').catch(() => meta)]);
     } catch (e) { FM.toast(e.message, true); return; }
+    meta = Object.assign({ stores: [], folders: [] }, meta);
+    m.store = m.store || '共通'; m.tags = m.tags || [];
+    const stores = actor.role === 'admin' ? meta.stores : ['共通'].concat(actor.store ? [actor.store] : []);
+    if (stores.indexOf(m.store) < 0) stores.push(m.store);
+    $('store').innerHTML = stores.map(x => `<option ${x === m.store ? 'selected' : ''}>${FM.esc(x)}</option>`).join('');
+    $('folderList').innerHTML = meta.folders.map(f => `<option value="${FM.esc(f)}">`).join('');
+    $('folder').value = m.folder || '';
+    $('tags').value = (m.tags || []).map(t => '#' + t).join(' ');
     baseLang = m.langs[0];
     lang = baseLang;
     $('hTitle').textContent = m.title;
     $('title').value = m.title;
     $('yt').value = m.youtubeId ? 'https://youtu.be/' + m.youtubeId : '';
     $('published').checked = m.status === 'published';
+    isAdmin = actor.role === 'admin';
+    renderReview();
+    if (m.driveFileId && !m.youtubeId) {
+      $('driveLink').href = 'https://drive.google.com/file/d/' + encodeURIComponent(m.driveFileId) + '/view';
+      $('driveNote').classList.remove('hidden');
+    }
+    if (m.status === 'draft' && /^差し戻し/.test(m.note || '')) {
+      $('statusNote').innerHTML = '<strong>差し戻されました。</strong><br><span class="muted">' + FM.esc(m.note.replace(/^差し戻し：/, '')) + '</span><br><span class="muted">直したら、もう一度「公開を申請する」を押してください。</span>';
+      $('statusNote').classList.remove('hidden');
+    }
     if (m.status === 'processing' || m.status === 'error') {
       $('statusNote').innerHTML = m.status === 'processing'
         ? '<strong>AIが下書きを作っています。</strong><br><span class="muted">できたらLINEでお知らせします。少し待ってから開き直してください。</span>'
@@ -128,7 +162,8 @@
     FMA.adminApi('reports', { id }).then(renderReports).catch(() => {});
   }
 
-  ['title', 'yt'].forEach(k => $(k).addEventListener('input', markChanged));
+  ['title', 'yt', 'folder', 'tags'].forEach(k => $(k).addEventListener('input', markChanged));
+  $('store').addEventListener('change', markChanged);
   $('published').onchange = markChanged;
   $('lang').onchange = () => { lang = $('lang').value; renderAll(); };
 
@@ -137,6 +172,56 @@
     document.querySelectorAll('.tabs button').forEach(x => x.classList.toggle('on', x === b));
     ['steps', 'subs', 'quiz', 'reports'].forEach(t => $('tab-' + t).classList.toggle('hidden', t !== b.dataset.tab));
   });
+
+  /* ---------- 公開申請・確認 ---------- */
+  let isAdmin = false;
+  const statusLabel = { draft: '下書き', review: '確認待ち', published: '公開中', processing: '作成中', error: 'エラー' };
+  function renderReview() {
+    const box = $('reviewBox');
+    $('editorStatus').textContent = '状態：' + (statusLabel[m.status] || m.status);
+    if (isAdmin && m.status === 'review') {
+      box.innerHTML = `<h2>公開の申請が来ています</h2>
+        <p class="muted" style="margin-top:0">${FM.esc(m.author || '')} さんからの申請です。内容を確認して、公開するか差し戻してください。</p>
+        <button class="primary" id="rvPublish" style="width:100%">確認して公開する</button>
+        <label class="field" style="margin:12px 0 6px"><span>差し戻す理由（責任者のLINEに届きます）</span><textarea id="rvComment" placeholder="例：手順3の温度を入れてください"></textarea></label>
+        <button id="rvReject" style="width:100%">差し戻す</button>`;
+      box.classList.remove('hidden');
+      $('rvPublish').onclick = () => decide('publish');
+      $('rvReject').onclick = () => decide('reject');
+    } else if (!isAdmin && (m.status === 'draft' || m.status === 'error')) {
+      box.innerHTML = `<button class="primary" id="rvRequest" style="width:100%">公開を申請する</button>
+        <p class="muted" style="margin:6px 0 0">管理者が確認してから、スタッフの一覧に公開されます。</p>`;
+      box.classList.toggle('hidden', m.status === 'error');
+      $('rvRequest').onclick = requestPublish;
+    } else if (!isAdmin && m.status === 'review') {
+      box.innerHTML = '<p style="margin:0">公開の確認待ちです。管理者が確認するとLINEでお知らせします。</p>';
+      box.classList.remove('hidden');
+    } else {
+      box.classList.add('hidden');
+    }
+  }
+  async function requestPublish() {
+    if (changed && !(await save())) return;
+    if (!window.confirm('管理者に公開を申請します。よろしいですか？')) return;
+    try {
+      await FMA.adminApi('requestPublish', { id: m.id });
+      m.status = 'review'; renderReview();
+      FM.toast('申請しました。確認されたらLINEでお知らせします');
+    } catch (e) { FM.toast(e.message, true); }
+  }
+  async function decide(decision) {
+    if (decision === 'publish') {
+      if (changed && !(await save())) return;
+      if (!$('yt').value.trim()) { FM.toast('先にYouTubeのURLを入れて保存してください', true); return; }
+    }
+    const comment = decision === 'reject' ? ($('rvComment').value || '').trim() : '';
+    if (decision === 'reject' && !comment && !window.confirm('理由なしで差し戻しますか？')) return;
+    try {
+      const r = await FMA.adminApi('review', { id: m.id, decision, comment });
+      m.status = r.status; $('published').checked = r.status === 'published'; renderReview();
+      FM.toast(decision === 'publish' ? '公開しました' : '差し戻しました');
+    } catch (e) { FM.toast(e.message, true); }
+  }
 
   /* ---------- 動画 ---------- */
   async function setupPlayer() {
@@ -315,7 +400,8 @@
       m.subs.sort((a, b) => a.start - b.start);
       const r = await FMA.adminApi('save', { manual: {
         id: m.id, title: $('title').value.trim() || m.title, youtubeId: $('yt').value.trim(),
-        status: $('published').checked ? 'published' : 'draft',
+        store: $('store').value, folder: $('folder').value.trim(), tags: FM.parseTags($('tags').value),
+        status: !isAdmin ? undefined : ($('published').checked ? 'published' : (m.status === 'review' || m.status === 'processing' || m.status === 'error' ? m.status : 'draft')),
         steps: m.steps, subs: m.subs, quiz: m.quiz.map(q => ({ question: q.question, choices: q.choices, answer: q.answer }))
       } });
       changed = false;
@@ -328,6 +414,7 @@
       FM.toast('保存しました');
       $('hTitle').textContent = $('title').value.trim() || m.title;
       const fresh = await FMA.adminApi('getDraft', { id: r.id });
+      m.status = fresh.status; m.driveFileId = fresh.driveFileId; renderReview();
       if (fresh.youtubeId !== ytBefore) location.reload();
       return true;
     } catch (e) { FM.toast(e.message, true); return false; }

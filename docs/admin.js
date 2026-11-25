@@ -6,27 +6,37 @@
     return FM.api(action, Object.assign({ key: getKey() }, params || {}));
   }
 
-  // パスワードが無い・違うときはログイン欄を出す
+  // 管理パスワード、またはLINEのログイン（店舗責任者・管理者）で入る
+  const actor = { role: '', name: '', store: '' };
   async function requireLogin(onReady) {
     const box = document.getElementById('loginBox');
     const main = document.getElementById('adminMain');
-    const tryIt = async () => {
+    const tryIt = async (silent) => {
       try {
-        await adminApi('ping');
+        const a = await adminApi('ping');
+        Object.assign(actor, a);
         box.classList.add('hidden');
         main.classList.remove('hidden');
-        onReady();
+        document.body.classList.toggle('is-editor', a.role !== 'admin');
+        onReady(actor);
       } catch (e) {
         box.classList.remove('hidden');
         main.classList.add('hidden');
-        if (getKey()) FM.toast(e.message, true);
+        if (!silent) FM.toast(e.message, true);
+        const note = document.getElementById('loginNote');
+        if (note && e.message) note.textContent = e.message;
       }
     };
     document.getElementById('loginBtn').onclick = () => {
       FM.store.set('adminKey', document.getElementById('loginKey').value);
-      tryIt();
+      tryIt(false);
     };
-    if (getKey()) tryIt(); else box.classList.remove('hidden');
+    if (getKey()) return tryIt(false);
+    if (FM.LIFF_ID) {
+      try { await FM.lineLogin(); return tryIt(true); }
+      catch (e) { /* LINEにログインできなければパスワード欄を出す */ }
+    }
+    box.classList.remove('hidden');
   }
 
   function toBase64(blob) {
@@ -53,7 +63,7 @@
   async function uploadToGemini(file, label, onProgress, opts) {
     opts = opts || {};
     const mimeType = file.mimeType || geminiMime(file);
-    const start = await adminApi('uploadStart', { size: file.size, mimeType, name: label });
+    const start = await adminApi('uploadStart', { size: file.size, mimeType, name: opts.driveName || label, toDrive: !!opts.toDrive });
     const gran = start.granularity || 8388608;
     const chunk = Math.max(gran, Math.floor(8388608 / gran) * gran);
     let offset = 0, info = null;
@@ -62,11 +72,11 @@
       const last = end >= file.size;
       const data = await toBase64(file.slice(offset, end));
       onProgress && onProgress(offset / file.size, `${label}を送っています… ${Math.round(offset / file.size * 100)}%`);
-      const r = await adminApi('uploadChunk', { uploadUrl: start.uploadUrl, offset, last, data });
+      const r = await adminApi('uploadChunk', { uploadUrl: start.uploadUrl, offset, last, data, driveUrl: start.driveUrl || '', total: file.size });
       if (last) info = r;
       offset = end;
     }
-    if (opts.noWait) return { name: info.name, uri: info.uri, mimeType: info.mimeType || mimeType }; // 読み込み待ちはGAS側でする
+    if (opts.noWait) return { name: info.name, uri: info.uri, mimeType: info.mimeType || mimeType, driveFileId: info.driveFileId || '' }; // 読み込み待ちはGAS側でする
     onProgress && onProgress(1, `${label}をAIが読み込んでいます…`);
     for (let i = 0; i < 90; i++) {
       if (info.state === 'ACTIVE') return { uri: info.uri, mimeType: info.mimeType || mimeType };
@@ -108,5 +118,5 @@
     return wav;
   }
 
-  window.FMA = { getKey, adminApi, requireLogin, uploadToGemini, toWav };
+  window.FMA = { getKey, adminApi, requireLogin, uploadToGemini, toWav, actor };
 })();

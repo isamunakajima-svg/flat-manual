@@ -19,6 +19,7 @@
       <input type="password" id="loginKey" class="grow" placeholder="ADMIN_KEY">
       <button class="primary" id="loginBtn">入る</button>
     </div>
+    <p class="muted" id="loginNote" style="margin:8px 0 0">店舗責任者の方は、LINEのマニュアルから「管理」を開いてください。</p>
   </div>
 
   <div id="adminMain" class="hidden">
@@ -27,6 +28,13 @@
       <h2>新しいマニュアルを作る</h2>
       <label class="field"><span>タイトル（空ならAIが付けます）</span><input type="text" id="newTitle"></label>
       <label class="field"><span>YouTubeのURL（あとからでもOK）</span><input type="url" id="newYt" placeholder="https://youtu.be/..."></label>
+      <p class="muted" style="margin:-6px 0 12px;font-size:13px">YouTubeに上げていなければ空のままでOKです。動画は管理者のGoogleドライブに保存され、管理者がYouTubeに上げます。</p>
+      <div class="filters" style="margin:0 0 12px">
+        <label><span class="muted" style="font-size:14px">店舗</span><select id="newStore"></select></label>
+        <label><span class="muted" style="font-size:14px">フォルダ（新しく作るなら入力）</span><input type="text" id="newFolder" list="folderList" placeholder="例：パン製造"></label>
+      </div>
+      <datalist id="folderList"></datalist>
+      <label class="field"><span>タグ（空ならAIが付けます。あとで直せます）</span><input type="text" id="newTags" placeholder="例：#クロワッサン #成形"></label>
       <label class="field"><span>動画ファイル（YouTubeに上げたものと同じ動画）</span><input type="file" id="newVideo" accept="video/*"></label>
       <p class="muted" id="videoInfo"></p>
 
@@ -64,8 +72,8 @@
       <div id="allList" class="list"><p class="muted">読み込み中…</p></div>
     </div>
 
-    <!-- スタッフ -->
-    <div class="card">
+    <!-- スタッフ（管理者だけ） -->
+    <div class="card admin-only">
       <h2>スタッフ <span class="badge hidden" id="pendingBadge"></span></h2>
       <p class="muted" style="margin-top:0">LINEで開いて名前を選んだ人は「承認待ち」になります。承認すると見られるようになります。辞めた人は「無効にする」で見られなくなります（記録は残ります）。</p>
       <div class="row" style="margin-bottom:10px">
@@ -75,7 +83,7 @@
       <div id="staffList"><p class="muted">読み込み中…</p></div>
     </div>
 
-    <p class="muted"><button class="small" id="logoutBtn">この端末からパスワードを消す</button></p>
+    <p class="muted admin-only"><button class="small" id="logoutBtn">この端末からパスワードを消す</button></p>
   </div>
 </main>
 
@@ -93,12 +101,16 @@
         published: '<span class="badge">公開中</span>',
         draft: '<span class="badge draft">下書き</span>',
         processing: '<span class="badge" style="background:#fff6e8;color:#b5642d">作成中…</span>',
+        review: '<span class="badge" style="background:#e8f0fb;color:#2f5f9e">確認待ち</span>',
         error: '<span class="badge" style="background:#f8eaea;color:#b33a3a">エラー</span>'
       };
+      const rank = { review: 0, processing: 1, error: 2, draft: 3, published: 4 };
+      list.sort((a, b) => (rank[a.status] ?? 5) - (rank[b.status] ?? 5));
       $('allList').innerHTML = list.length ? list.map(m => `
         <a class="item" href="edit.html?id=${encodeURIComponent(m.id)}">
           ${m.youtubeId ? `<img class="thumb" src="https://i.ytimg.com/vi/${FM.esc(m.youtubeId)}/mqdefault.jpg" alt="">` : '<div class="thumb"></div>'}
-          <div class="grow"><strong>${FM.esc(m.title)}</strong>
+          <div class="grow"><div><span class="chip-store">${FM.esc(m.store)}</span><strong>${FM.esc(m.title)}</strong></div>
+            <div class="muted" style="font-size:13px">${m.folder ? '📁 ' + FM.esc(m.folder) : 'フォルダなし'}</div>
             ${m.note ? `<div class="muted" style="font-size:13px">${FM.esc(m.note)}</div>` : ''}</div>
           ${badge[m.status] || badge.draft}
         </a>`).join('') : '<p class="muted">まだありません</p>';
@@ -120,9 +132,15 @@
       else { status = '<span class="badge draft">未登録</span>'; }
       if (s.active) btns += ` <button class="small danger" data-op="disable">無効にする</button>`;
       if (s.linked) btns += ` <button class="small" data-op="unlink">LINE連携を外す</button>`;
+      const storeOpts = ['<option value="">店舗なし</option>'].concat(meta.stores.filter(x => x !== '共通').map(x => `<option ${x === s.store ? 'selected' : ''}>${FM.esc(x)}</option>`)).join('');
+      const roleOpts = [['', 'スタッフ'], ['editor', '店舗責任者'], ['admin', '管理者']].map(([v, l]) => `<option value="${v}" ${v === s.role ? 'selected' : ''}>${l}</option>`).join('');
       return `<div class="edit-row" data-name="${FM.esc(s.name)}">
         <div class="row"><strong class="grow">${FM.esc(s.name)}</strong>${status}</div>
         ${s.lineName ? `<div class="muted" style="font-size:13px">LINEの名前：${FM.esc(s.lineName)}</div>` : ''}
+        <div class="filters" style="margin-top:6px">
+          <select data-set="store">${storeOpts}</select>
+          <select data-set="role">${roleOpts}</select>
+        </div>
         <div class="row" style="margin-top:6px">${btns}</div>
       </div>`;
     }).join('') : '<p class="muted">まだいません</p>';
@@ -141,6 +159,15 @@
     try { renderStaff(await FMA.adminApi('staffUpdate', { name, op })); FM.toast('更新しました'); }
     catch (err) { FM.toast(err.message, true); b.disabled = false; }
   });
+  $('staffList').addEventListener('change', async e => {
+    const sel = e.target.closest('select[data-set]'); if (!sel) return;
+    const name = sel.closest('.edit-row').dataset.name;
+    const params = { name, op: 'set' };
+    params[sel.dataset.set] = sel.value;
+    if (sel.dataset.set === 'role' && sel.value && !window.confirm(`${name} さんを「${sel.options[sel.selectedIndex].text}」にします。マニュアルの投稿・編集ができるようになります。よろしいですか？`)) { loadStaff(); return; }
+    try { renderStaff(await FMA.adminApi('staffUpdate', params)); FM.toast('更新しました'); }
+    catch (err) { FM.toast(err.message, true); loadStaff(); }
+  });
   $('addStaffBtn').onclick = async () => {
     const name = $('newStaff').value.trim();
     if (!name) return;
@@ -148,7 +175,22 @@
     catch (err) { FM.toast(err.message, true); }
   };
 
-  FMA.requireLogin(() => { loadList(); loadStaff(); });
+  let meta = { stores: [], folders: [] };
+  async function loadMeta(actor) {
+    try { meta = Object.assign({ stores: [], folders: [] }, await FMA.adminApi('meta')); } catch (e) {}
+    if (!meta.stores.length) meta.stores = ['共通'];
+    const stores = actor.role === 'admin' ? meta.stores : ['共通'].concat(actor.store ? [actor.store] : []);
+    $('newStore').innerHTML = stores.map(x => `<option>${FM.esc(x)}</option>`).join('');
+    $('newStore').value = actor.role === 'admin' ? '共通' : (actor.store || '共通');
+    $('folderList').innerHTML = meta.folders.map(f => `<option value="${FM.esc(f)}">`).join('');
+  }
+
+  FMA.requireLogin(async actor => {
+    await loadMeta(actor);
+    loadList();
+    if (actor.role === 'admin') loadStaff();
+    else document.querySelector('header.bar h1').textContent = '管理（' + (actor.store || '') + ' ' + actor.name + '）';
+  });
   $('logoutBtn').onclick = () => { FM.store.remove('adminKey'); location.reload(); };
 
   // 作り方の切り替え
@@ -214,7 +256,9 @@
     btn.disabled = true;
     const prog = (p, msg) => { $('genBar').style.width = Math.round(p * 100) + '%'; $('genMsg').textContent = msg; };
     try {
-      const video = await FMA.uploadToGemini(f, '動画', (p, m) => prog(p * 0.8, m), { noWait: true });
+      const ytUrl = $('newYt').value.trim();
+      const video = await FMA.uploadToGemini(f, '動画', (p, m) => prog(p * 0.8, m),
+        { noWait: true, toDrive: !ytUrl, driveName: ($('newTitle').value.trim() || f.name || '動画') });
       let audio = null;
       if (mode === 'voiceover') {
         prog(0.8, '録音を変換しています…');
@@ -225,11 +269,14 @@
       await FMA.adminApi('queue', {
         title: $('newTitle').value.trim(),
         youtubeId: $('newYt').value.trim(),
+        store: $('newStore').value, folder: $('newFolder').value.trim(), tags: $('newTags').value.trim(),
+        driveFileId: video.driveFileId || '',
         mode, memo: $('newMemo').value.trim(), video, audio
       });
       prog(1, '受け付けました。AIが裏で下書きを作ります。できたらLINEでお知らせするので、この画面は閉じて大丈夫です。');
       FM.toast('受け付けました。閉じて大丈夫です');
-      ['newTitle', 'newYt', 'newMemo'].forEach(k => $(k).value = '');
+      ['newTitle', 'newYt', 'newMemo', 'newTags'].forEach(k => $(k).value = '');
+      if (!meta.folders.includes($('newFolder').value.trim())) loadMeta(FMA.actor);
       $('newVideo').value = ''; $('videoInfo').textContent = '';
       voiceBlob = null; $('voPlay').classList.add('hidden');
       btn.disabled = false;

@@ -20,14 +20,19 @@ const GEMINI_BASE = 'https://generativelanguage.googleapis.com';
 const ADMIN_PAGE_URL = 'https://isamunakajima-svg.github.io/flat-manual/admin.html';
 
 const SHEETS = {
-  manuals: ['id', 'title', 'youtubeId', 'status', 'createdAt', 'updatedAt', 'memo', 'note'],
+  manuals: ['id', 'title', 'youtubeId', 'status', 'createdAt', 'updatedAt', 'memo', 'note', 'store', 'folder', 'tags', 'author', 'authorId', 'driveFileId'],
   steps: ['manualId', 'idx', 'start'].concat(flatLang_(['title', 'desc'])),
   subs: ['manualId', 'idx', 'start', 'end'].concat(LANGS.map(l => 'text_' + l)),
   quiz: ['manualId', 'idx', 'question', 'choices', 'answer'],
-  staff: ['name', 'active', 'lineUserId', 'lineName', 'approved', 'registeredAt'],
+  staff: ['name', 'active', 'lineUserId', 'lineName', 'approved', 'registeredAt', 'store', 'role'],
   logs: ['sessionId', 'ts', 'staff', 'manualId', 'watchedSec', 'duration', 'maxPos', 'completed', 'stepViews', 'quizScore', 'quizTotal', 'confirmed'],
-  reports: ['ts', 'staff', 'manualId', 'subIdx', 'note', 'done']
+  reports: ['ts', 'staff', 'manualId', 'subIdx', 'note', 'done'],
+  stores: ['name'],
+  folders: ['name', 'createdBy', 'createdAt']
 };
+const COMMON_STORE = '共通';
+const DEFAULT_STORES = [COMMON_STORE, '馬場', '高円寺'];
+const DEFAULT_FOLDERS = ['パン製造', '片付け・清掃', '機械', 'ドリンク'];
 
 function flatLang_(fields) {
   const out = [];
@@ -50,14 +55,33 @@ function setup() {
   if (staff.getLastRow() < 2) {
     staff.getRange(2, 1, 2, 2).setValues([['テスト太郎', true], ['テスト花子', true]]);
   }
+  seedLists_();
   // active と approved をチェックボックスにする
   staff.getRange('B2:B300').insertCheckboxes();
   staff.getRange('E2:E300').insertCheckboxes();
 }
 
-/** 列が増えたときに見出しだけ追加する（setup をやり直さなくても動くように） */
+function seedLists_() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const st = ss.getSheetByName('stores');
+  if (st && st.getLastRow() < 2) DEFAULT_STORES.forEach(n => st.appendRow([n]));
+  const fo = ss.getSheetByName('folders');
+  if (fo && fo.getLastRow() < 2) DEFAULT_FOLDERS.forEach(n => fo.appendRow([n, 'setup', new Date().toISOString()]));
+}
+
+/** 列やシートが増えたときに追加する（setup をやり直さなくても動くように） */
 function ensureHeaders_() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let created = false;
+  ['stores', 'folders'].forEach(name => {
+    if (!ss.getSheetByName(name)) {
+      const sh = ss.insertSheet(name);
+      sh.getRange(1, 1, 1, SHEETS[name].length).setValues([SHEETS[name]]).setFontWeight('bold');
+      sh.setFrozenRows(1);
+      created = true;
+    }
+  });
+  if (created) seedLists_();
   ['staff', 'logs', 'manuals'].forEach(name => {
     const sh = ss.getSheetByName(name);
     if (!sh) return;
@@ -137,8 +161,8 @@ function doPost(e) {
     const adm = ADMIN_ACTIONS[action];
     if (pub) return json_({ ok: true, data: pub(req) });
     if (adm) {
-      if (!isAdmin_(req.key)) return json_({ ok: false, error: '管理パスワードが違います' });
-      return json_({ ok: true, data: adm(req) });
+      const actor = actor_(req);
+      return json_({ ok: true, data: adm(req, actor) });
     }
     return json_({ ok: false, error: 'unknown action: ' + action });
   } catch (err) {
@@ -157,6 +181,76 @@ function prop_(k) {
 function isAdmin_(key) {
   const k = prop_('ADMIN_KEY');
   return !!k && key === k;
+}
+
+/* ========== 管理者・店舗責任者 ========== */
+
+/**
+ * 管理画面を使う人を調べる。
+ * admin：管理パスワード、または staff シートで role が admin の人（全部できる）
+ * editor：role が editor の人（自分の店舗と共通のマニュアルだけ）
+ */
+function actor_(req) {
+  if (isAdmin_(req.key)) return { role: 'admin', name: '管理者', store: '' };
+  if (lineEnabled_() && req.idToken) {
+    const who = verifyLine_(req.idToken);
+    const row = staffRows_().find(r => String(r.lineUserId) === who.userId);
+    if (row && row.active === true && row.approved === true) {
+      const role = String(row.role || '').trim();
+      if (role === 'admin' || role === 'editor') {
+        return { role: role, name: String(row.name), store: String(row.store || ''), userId: who.userId };
+      }
+    }
+    throw new Error('管理画面は、管理者と店舗責任者だけが使えます');
+  }
+  throw new Error(req.key ? '管理パスワードが違います' : '管理パスワードを入れるか、LINEから開いてください');
+}
+
+function normStore_(s) {
+  s = String(s || '').trim();
+  return s || COMMON_STORE;
+}
+
+function canManage_(actor, store) {
+  if (actor.role === 'admin') return true;
+  store = normStore_(store);
+  return store === COMMON_STORE || (!!actor.store && store === actor.store);
+}
+
+function requireAdmin_(actor) {
+  if (actor.role !== 'admin') throw new Error('この操作は管理者だけができます');
+}
+
+function manualStore_(id) {
+  const m = readAll_('manuals').find(r => String(r.id) === String(id));
+  if (!m) throw new Error('マニュアルが見つかりません');
+  return normStore_(m.store);
+}
+
+function requireManual_(actor, id) {
+  if (!canManage_(actor, manualStore_(id))) throw new Error('このマニュアルはほかの店舗のものなので、編集できません');
+}
+
+function listNames_(sheetName) {
+  return readAll_(sheetName).map(r => String(r.name || '').trim()).filter(n => n);
+}
+
+function ensureFolder_(name, by) {
+  name = String(name || '').trim();
+  if (!name) return;
+  if (listNames_('folders').indexOf(name) >= 0) return;
+  sheet_('folders').appendRow([name, by || '', new Date().toISOString()]);
+}
+
+function parseTags_(v) {
+  const arr = Array.isArray(v) ? v : String(v || '').split(/[\s,、，#＃]+/);
+  const out = [];
+  arr.map(t => String(t).replace(/^[#＃]/, '').trim()).filter(t => t).forEach(t => { if (out.indexOf(t) < 0) out.push(t); });
+  return out.slice(0, 15);
+}
+
+function meta_() {
+  return { stores: listNames_('stores'), folders: listNames_('folders') };
 }
 
 /* ========== シート読み書き ========== */
@@ -204,7 +298,8 @@ function withLock_(fn) {
 function listManuals_(includeDrafts) {
   return readAll_('manuals')
     .filter(m => m.id && (includeDrafts || m.status === 'published'))
-    .map(m => ({ id: String(m.id), title: m.title, youtubeId: m.youtubeId, status: m.status, updatedAt: m.updatedAt, note: m.note || '' }))
+    .map(m => ({ id: String(m.id), title: m.title, youtubeId: m.youtubeId, status: m.status, updatedAt: m.updatedAt, note: m.note || '',
+      store: normStore_(m.store), folder: String(m.folder || ''), tags: parseTags_(m.tags), author: String(m.author || '') }))
     .sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
 }
 
@@ -230,6 +325,8 @@ function getManual_(id, includeDrafts) {
   }));
   return {
     id: String(m.id), title: m.title, youtubeId: m.youtubeId, status: m.status, memo: m.memo, note: m.note || '',
+    store: normStore_(m.store), folder: String(m.folder || ''), tags: parseTags_(m.tags),
+    author: String(m.author || ''), driveFileId: String(m.driveFileId || ''),
     steps: steps, subs: subs, quiz: quiz, langs: LANGS, langNames: LANG_NAMES
   };
 }
@@ -251,11 +348,26 @@ function saveManual_(m) {
       status: m.status || base.status || 'draft',
       memo: m.memo !== undefined ? m.memo : base.memo,
       note: m.note !== undefined ? m.note : (base.note || ''),
+      store: m.store !== undefined ? normStore_(m.store) : normStore_(base.store),
+      folder: m.folder !== undefined ? String(m.folder || '').trim() : (base.folder || ''),
+      tags: m.tags !== undefined ? parseTags_(m.tags).join(', ') : (base.tags || ''),
+      author: m.author !== undefined ? m.author : (base.author || ''),
+      authorId: m.authorId !== undefined ? m.authorId : (base.authorId || ''),
+      driveFileId: m.driveFileId !== undefined ? m.driveFileId : (base.driveFileId || ''),
       updatedAt: now
     });
     const row = rowFrom_('manuals', rec);
     if (rowIndex >= 0) sh.getRange(rowIndex + 2, 1, 1, row.length).setValues([row]);
     else sh.appendRow(row);
+    if (rec.folder) ensureFolder_(rec.folder, m._by || '');
+    // YouTubeのURLが入ったら、Driveに一時保存していた動画はゴミ箱へ
+    if (rec.youtubeId && rec.driveFileId) {
+      try { DriveApp.getFileById(rec.driveFileId).setTrashed(true); } catch (e) { console.warn('Driveの動画を消せませんでした: ' + e); }
+      rec.driveFileId = '';
+      const r2 = rowFrom_('manuals', rec);
+      const i2 = readAll_('manuals').findIndex(r => String(r.id) === String(id));
+      if (i2 >= 0) sh.getRange(i2 + 2, 1, 1, r2.length).setValues([r2]);
+    }
 
     if (m.steps) replaceRows_('steps', id, m.steps.map((s, i) => {
       const o = { idx: i, start: round1_(s.start) };
@@ -344,7 +456,7 @@ function identify_(req) {
   if (!row) return { status: 'unregistered', lineName: who.lineName, userId: who.userId };
   if (row.active !== true) return { status: 'blocked', name: row.name };
   if (row.approved !== true) return { status: 'pending', name: row.name };
-  return { status: 'ok', name: String(row.name), userId: who.userId };
+  return { status: 'ok', name: String(row.name), userId: who.userId, role: String(row.role || ''), store: String(row.store || '') };
 }
 
 function requireViewer_(req) {
@@ -360,7 +472,12 @@ function me_(req) {
   const me = identify_(req);
   const out = { status: me.status, name: me.name || '', lineName: me.lineName || '', mode: me.admin ? 'admin' : (me.legacy ? 'legacy' : 'line') };
   const notifyIds = String(prop_('NOTIFY_USER_IDS') || '').split(',').map(x => x.trim());
-  out.canEdit = !!me.admin || (me.status === 'ok' && !!me.userId && notifyIds.indexOf(me.userId) >= 0);
+  out.store = me.store || '';
+  // 編集できる店舗：'*' は全部
+  if (me.admin || me.role === 'admin' || (me.status === 'ok' && me.userId && notifyIds.indexOf(me.userId) >= 0)) out.editStores = ['*'];
+  else if (me.role === 'editor' && me.status === 'ok') out.editStores = [COMMON_STORE].concat(me.store ? [me.store] : []);
+  else out.editStores = [];
+  out.canEdit = out.editStores.length > 0;
   if (me.status === 'unregistered') {
     out.candidates = staffRows_().filter(r => r.active === true && !r.lineUserId).map(r => String(r.name));
   }
@@ -407,9 +524,10 @@ function notifyApproval_(name, lineName) {
 }
 
 /** 管理者のLINEに通知する。設定がなければ何もしない。失敗しても登録は止めない */
-function notifyAdmins_(text, richMessage) {
+function notifyAdmins_(text, richMessage, extraIds) {
   const token = prop_('LINE_MESSAGING_TOKEN');
   const ids = String(prop_('NOTIFY_USER_IDS') || '').split(',').map(x => x.trim()).filter(x => x);
+  (extraIds || []).forEach(x => { if (x && ids.indexOf(x) < 0) ids.push(x); });
   if (!token || !ids.length) return false;
   try {
     const res = UrlFetchApp.fetch('https://api.line.me/v2/bot/message/multicast', {
@@ -444,7 +562,8 @@ function testNotify() {
 function staffAdminList_() {
   return staffRows_().map(r => ({
     name: String(r.name), active: r.active === true, approved: r.approved === true,
-    linked: !!r.lineUserId, lineName: r.lineName || '', registeredAt: r.registeredAt ? String(r.registeredAt) : ''
+    linked: !!r.lineUserId, lineName: r.lineName || '', registeredAt: r.registeredAt ? String(r.registeredAt) : '',
+    store: String(r.store || ''), role: String(r.role || '')
   }));
 }
 
@@ -459,6 +578,14 @@ function staffUpdate_(req) {
     else if (req.op === 'disable') set('active', false);
     else if (req.op === 'enable') set('active', true);
     else if (req.op === 'unlink') { set('lineUserId', ''); set('lineName', ''); set('approved', false); set('registeredAt', ''); }
+    else if (req.op === 'set') {
+      if (req.store !== undefined) set('store', String(req.store || ''));
+      if (req.role !== undefined) {
+        const role = String(req.role || '');
+        if (['', 'editor', 'admin'].indexOf(role) < 0) throw new Error('不明な役割');
+        set('role', role);
+      }
+    }
     else throw new Error('不明な操作');
     return staffAdminList_();
   });
@@ -507,11 +634,16 @@ function logView_(req) {
 }
 
 /** スタッフ × マニュアルの一覧（一番よく見た回の数字） */
-function progressReport_() {
-  const manuals = listManuals_(true);
-  const staff = readAll_('staff').filter(s => s.name && s.active !== false).map(s => String(s.name));
+function progressReport_(actor) {
+  actor = actor || { role: 'admin' };
+  const manuals = listManuals_(true).filter(m => canManage_(actor, m.store));
+  const staff = readAll_('staff').filter(s => s.name && s.active !== false)
+    .filter(s => actor.role === 'admin' || String(s.store || '') === actor.store).map(s => String(s.name));
   const cells = {};
+  const manualIds = manuals.map(m => m.id);
   readAll_('logs').forEach(l => {
+    if (manualIds.indexOf(String(l.manualId)) < 0) return;
+    if (actor.role !== 'admin' && staff.indexOf(String(l.staff)) < 0) return;
     const key = l.staff + '\u0000' + l.manualId;
     const dur = Number(l.duration) || 0;
     const pct = dur ? Math.min(100, Math.round(Number(l.watchedSec) / dur * 100)) : 0;
@@ -586,7 +718,52 @@ function uploadStart_(req) {
   if (res.getResponseCode() >= 300) throw new Error('アップロード開始に失敗: ' + res.getContentText().slice(0, 300));
   const url = headerOf_(res, 'X-Goog-Upload-URL');
   if (!url) throw new Error('アップロード先URLが取得できませんでした');
-  return { uploadUrl: url, granularity: Number(headerOf_(res, 'X-Goog-Upload-Chunk-Granularity')) || 8388608 };
+  const out = { uploadUrl: url, granularity: Number(headerOf_(res, 'X-Goog-Upload-Chunk-Granularity')) || 8388608 };
+  // YouTubeのURLがまだ無い投稿は、管理者がYouTubeに上げられるようにDriveにも保存する
+  if (req.toDrive) out.driveUrl = driveUploadStart_(req);
+  return out;
+}
+
+/* --- Driveへの一時保存 --- */
+
+function driveFolderId_() {
+  const props = PropertiesService.getScriptProperties();
+  let id = props.getProperty('DRIVE_FOLDER_ID');
+  if (id) { try { DriveApp.getFolderById(id); return id; } catch (e) {} }
+  id = DriveApp.createFolder('FLAT マニュアル 動画（YouTube未登録）').getId();
+  props.setProperty('DRIVE_FOLDER_ID', id);
+  return id;
+}
+
+function driveUploadStart_(req) {
+  const res = UrlFetchApp.fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable', {
+    method: 'post',
+    contentType: 'application/json; charset=UTF-8',
+    headers: {
+      Authorization: 'Bearer ' + ScriptApp.getOAuthToken(),
+      'X-Upload-Content-Type': req.mimeType,
+      'X-Upload-Content-Length': String(req.size)
+    },
+    payload: JSON.stringify({ name: String(req.name || '動画') + '_' + Utilities.formatDate(new Date(), 'Asia/Tokyo', 'yyyyMMdd_HHmm'), parents: [driveFolderId_()] }),
+    muteHttpExceptions: true
+  });
+  if (res.getResponseCode() >= 300) throw new Error('Driveへの保存を始められませんでした: ' + res.getContentText().slice(0, 200));
+  return headerOf_(res, 'Location');
+}
+
+function driveUploadChunk_(url, bytes, offset, total) {
+  const res = UrlFetchApp.fetch(url, {
+    method: 'put',
+    contentType: 'application/octet-stream',
+    headers: { 'Content-Range': 'bytes ' + offset + '-' + (offset + bytes.length - 1) + '/' + total },
+    payload: bytes,
+    muteHttpExceptions: true,
+    followRedirects: false
+  });
+  const code = res.getResponseCode();
+  if (code === 308) return '';
+  if (code === 200 || code === 201) return JSON.parse(res.getContentText()).id;
+  throw new Error('Driveへの保存に失敗: ' + res.getContentText().slice(0, 200));
 }
 
 /** 分割した1片を送る。最後の1片で file 情報が返る */
@@ -604,9 +781,14 @@ function uploadChunk_(req) {
     muteHttpExceptions: true
   });
   if (res.getResponseCode() >= 300) throw new Error('アップロードに失敗: ' + res.getContentText().slice(0, 300));
+  let driveFileId = '';
+  if (req.driveUrl) {
+    if (String(req.driveUrl).indexOf('https://www.googleapis.com/upload/drive/') !== 0) throw new Error('不正な保存先');
+    driveFileId = driveUploadChunk_(req.driveUrl, bytes, Number(req.offset), Number(req.total));
+  }
   if (!req.last) return { received: bytes.length };
   const f = JSON.parse(res.getContentText()).file;
-  return { name: f.name, uri: f.uri, mimeType: f.mimeType, state: f.state };
+  return { name: f.name, uri: f.uri, mimeType: f.mimeType, state: f.state, driveFileId: driveFileId };
 }
 
 /** Gemini側の処理が終わったか（ACTIVE になったら使える） */
@@ -668,7 +850,8 @@ const DRAFT_PROMPT = [
   '  "title": "マニュアルのタイトル（20字以内）",',
   '  "steps": [ { "start": 0, "title": "手順の見出し（15字以内）", "desc": "やることとコツ（60字以内）" } ],',
   '  "subtitles": [ { "start": 0.0, "end": 3.5, "text": "字幕（1行20字程度まで）" } ],',
-  '  "quiz": [ { "question": "確認の問題", "choices": ["選択肢1", "選択肢2", "選択肢3"], "answer": 0 } ]',
+  '  "quiz": [ { "question": "確認の問題", "choices": ["選択肢1", "選択肢2", "選択肢3"], "answer": 0 } ],',
+  '  "tags": ["検索用のキーワード（#は付けない）"]',
   '}',
   '',
   'ルール:',
@@ -676,6 +859,7 @@ const DRAFT_PROMPT = [
   '- subtitles は動画全体をカバーし、重ならないように。字幕は短く、読みやすく。',
   '- quiz は大事なポイントについて 2〜3 問。answer は正解の選択肢の番号（0始まり）。',
   '- 動画やメモから分からない数値（温度・時間・分量）は作らない。',
+  '- tags は検索に使う短いキーワードを 3〜5 個（商品名・作業名・道具や機械の名前など）。',
 ].join('\n');
 
 const SOURCE_TEXT = {
@@ -710,15 +894,19 @@ function generateDraft_(req) {
   const quiz = (out.quiz || []).map(q => ({
     question: q.question || '', choices: (q.choices || []).map(String), answer: Number(q.answer) || 0
   }));
-  return saveManual_({
+  const rec = {
     id: req.id || '',
     title: req.title || out.title || '新しいマニュアル',
     youtubeId: req.youtubeId || '',
     status: 'draft',
     memo: req.memo || '',
     note: '',
+    tags: parseTags_(req.tags).concat(parseTags_(out.tags || [])),
     steps: steps, subs: subs, quiz: quiz
-  });
+  };
+  if (req.store !== undefined) rec.store = req.store;
+  if (req.folder !== undefined) rec.folder = req.folder;
+  return saveManual_(rec);
 }
 
 /* ========== 下書きを裏で作る（画面を閉じても進む） ========== */
@@ -728,11 +916,14 @@ function queueDraft_(req) {
   if (!req.video || !req.video.name) throw new Error('動画がありません');
   const saved = saveManual_({
     title: req.title || '（作成中）', youtubeId: req.youtubeId || '', status: 'processing',
-    memo: req.memo || '', note: 'AIが下書きを作っています'
+    memo: req.memo || '', note: 'AIが下書きを作っています',
+    store: req.store, folder: req.folder || '', tags: req.tags || '', _by: req._by || '',
+    author: req._by || '', authorId: req._notifyTo || '', driveFileId: req.driveFileId || ''
   });
   const job = {
     id: saved.id, title: req.title || '', youtubeId: req.youtubeId || '', mode: req.mode,
     memo: String(req.memo || '').slice(0, 3000), video: req.video, audio: req.audio || null,
+    tags: req.tags || '', notifyTo: req._notifyTo || '',
     queuedAt: Date.now(), tries: 0
   };
   PropertiesService.getScriptProperties().setProperty('job_' + saved.id, JSON.stringify(job));
@@ -772,11 +963,11 @@ function processJobs() {
       }
       generateDraft_({
         id: job.id, title: job.title, youtubeId: job.youtubeId, mode: job.mode, memo: job.memo,
-        video: job.video, audio: job.audio
+        video: job.video, audio: job.audio, tags: job.tags
       });
       props.deleteProperty(key);
       const m = readAll_('manuals').find(r => String(r.id) === String(job.id)) || {};
-      notifyDone_(job.id, m.title || job.title, '');
+      notifyDone_(job.id, m.title || job.title, '', job.notifyTo);
     } catch (err) {
       const msg = String(err && err.message || err);
       job.tries = (job.tries || 0) + 1;
@@ -788,14 +979,69 @@ function processJobs() {
       }
       props.deleteProperty(key);
       saveManual_({ id: job.id, status: 'error', note: msg.slice(0, 300) });
-      notifyDone_(job.id, job.title || '（タイトルなし）', msg);
+      notifyDone_(job.id, job.title || '（タイトルなし）', msg, job.notifyTo);
     }
   });
   if (waiting) scheduleJobs_(60);
 }
 
+/* ========== 公開申請（店舗責任者 → 管理者） ========== */
+
+function editUrl_(id) {
+  return ADMIN_PAGE_URL.replace('admin.html', 'edit.html') + '?id=' + encodeURIComponent(id);
+}
+
+/** ボタン1つ付きのLINE。onlyIds が true なら ids の人だけ、false なら管理者＋ids */
+function pushButton_(text, label, uri, ids, onlyIds) {
+  const msg = { type: 'template', altText: text.slice(0, 400), template: { type: 'buttons', text: text.slice(0, 160), actions: [{ type: 'uri', label: label, uri: uri }] } };
+  if (onlyIds) return pushTo_(ids, msg);
+  return notifyAdmins_(text, msg, ids);
+}
+
+function pushTo_(ids, msg) {
+  const token = prop_('LINE_MESSAGING_TOKEN');
+  ids = (ids || []).filter(x => x);
+  if (!token || !ids.length) return false;
+  try {
+    const res = UrlFetchApp.fetch('https://api.line.me/v2/bot/message/multicast', {
+      method: 'post', contentType: 'application/json', headers: { Authorization: 'Bearer ' + token },
+      payload: JSON.stringify({ to: ids, messages: [msg] }), muteHttpExceptions: true
+    });
+    return res.getResponseCode() === 200;
+  } catch (e) { return false; }
+}
+
+function requestPublish_(req, actor) {
+  const m = getManual_(req.id, true);
+  if (m.status === 'processing') throw new Error('まだAIが下書きを作っています');
+  if (m.status === 'published') throw new Error('すでに公開されています');
+  const row = readAll_('manuals').find(r => String(r.id) === String(m.id)) || {};
+  saveManual_({ id: m.id, status: 'review', note: '公開の確認待ち（' + actor.name + '）', author: row.author || actor.name, authorId: row.authorId || actor.userId || '' });
+  const text = '【FLAT マニュアル】' + actor.name + ' さんが「' + m.title + '」の公開を申請しました。' + (m.youtubeId ? '' : '\n（YouTube未登録：動画はDriveにあります）');
+  pushButton_(text, '確認する', editUrl_(m.id), null, false);
+  return { status: 'review' };
+}
+
+function reviewDecision_(req, actor) {
+  const m = getManual_(req.id, true);
+  const row = readAll_('manuals').find(r => String(r.id) === String(m.id)) || {};
+  if (req.decision === 'publish') {
+    if (!m.youtubeId) throw new Error('YouTubeのURLを入れてから公開してください');
+    saveManual_({ id: m.id, status: 'published', note: '' });
+    if (row.authorId) pushButton_('【FLAT マニュアル】「' + m.title + '」が公開されました。ありがとうございます！', '見る', ADMIN_PAGE_URL.replace('admin.html', 'view.html') + '?id=' + encodeURIComponent(m.id), [row.authorId], true);
+    return { status: 'published' };
+  }
+  if (req.decision === 'reject') {
+    const comment = String(req.comment || '').slice(0, 300);
+    saveManual_({ id: m.id, status: 'draft', note: '差し戻し：' + (comment || '（コメントなし）') });
+    if (row.authorId) pushButton_('【FLAT マニュアル】「' + m.title + '」が差し戻されました。\n' + comment, '直す', editUrl_(m.id), [row.authorId], true);
+    return { status: 'draft' };
+  }
+  throw new Error('不明な操作');
+}
+
 /** 下書きができた（または失敗した）ことをLINEで知らせる */
-function notifyDone_(id, title, errorMsg) {
+function notifyDone_(id, title, errorMsg, extraTo) {
   const editUrl = ADMIN_PAGE_URL.replace('admin.html', 'edit.html') + '?id=' + encodeURIComponent(id);
   const text = errorMsg
     ? '【FLAT マニュアル】「' + title + '」の下書きを作れませんでした。\n' + errorMsg
@@ -804,7 +1050,7 @@ function notifyDone_(id, title, errorMsg) {
     type: 'template', altText: text.slice(0, 400),
     template: { type: 'buttons', text: text.slice(0, 160),
       actions: [{ type: 'uri', label: errorMsg ? '管理画面を開く' : '編集する', uri: errorMsg ? ADMIN_PAGE_URL : editUrl }] }
-  });
+  }, extraTo ? [extraTo] : null);
 }
 
 /** 日本語から他の言語へ翻訳して保存する（手順と字幕） */
@@ -838,6 +1084,7 @@ function translateManual_(req) {
 
 const PUBLIC_ACTIONS = {
   me: req => me_(req),
+  meta: req => { requireViewer_(req); return meta_(); },
   register: req => register_(req),
   list: req => { requireViewer_(req); return listManuals_(false); },
   get: req => { requireViewer_(req); return getManual_(req.id, false); },
@@ -850,21 +1097,52 @@ const PUBLIC_ACTIONS = {
 };
 
 const ADMIN_ACTIONS = {
-  ping: () => ({ admin: true }),
-  listAll: () => listManuals_(true),
-  getDraft: req => getManual_(req.id, true),
-  save: req => saveManual_(req.manual),
-  remove: req => deleteManual_(req.id),
+  ping: (req, a) => ({ role: a.role, name: a.name, store: a.store }),
+  meta: () => meta_(),
+  listAll: (req, a) => listManuals_(true).filter(m => canManage_(a, m.store)),
+  getDraft: (req, a) => { requireManual_(a, req.id); return getManual_(req.id, true); },
+  save: (req, a) => {
+    const m = req.manual || {};
+    if (m.id) requireManual_(a, m.id);
+    if (m.store !== undefined && !canManage_(a, m.store)) throw new Error('その店舗には保存できません');
+    if (!m.id && m.store === undefined && a.role !== 'admin') m.store = a.store || COMMON_STORE;
+    m._by = a.name;
+    const cur = m.id ? readAll_('manuals').find(r => String(r.id) === String(m.id)) : null;
+    if (a.role !== 'admin') {
+      // 責任者は公開・非公開を変えられない（公開は管理者が確認してから）
+      delete m.status;
+      if (!m.id) { m.status = 'draft'; m.author = a.name; m.authorId = a.userId || ''; }
+      const out = saveManual_(m);
+      if (cur && cur.status === 'published') {
+        pushButton_('【FLAT マニュアル】' + a.name + ' さんが公開中の「' + (m.title || cur.title) + '」を編集しました。', '確認する', editUrl_(out.id), null, false);
+      }
+      return out;
+    }
+    if (m.status === 'published' && !(m.youtubeId || (cur && cur.youtubeId))) throw new Error('YouTubeのURLを入れてから公開してください');
+    return saveManual_(m);
+  },
+  requestPublish: (req, a) => { requireManual_(a, req.id); return requestPublish_(req, a); },
+  review: (req, a) => { requireAdmin_(a); return reviewDecision_(req, a); },
+  remove: (req, a) => { requireManual_(a, req.id); return deleteManual_(req.id); },
   uploadStart: req => uploadStart_(req),
   uploadChunk: req => uploadChunk_(req),
   fileStatus: req => fileStatus_(req),
-  generate: req => generateDraft_(req),
-  queue: req => queueDraft_(req),
-  translate: req => translateManual_(req),
-  progress: () => progressReport_(),
-  stepStats: req => stepStats_(req.id),
-  reports: req => listReports_(req.id),
-  staffList: () => staffAdminList_(),
-  staffUpdate: req => staffUpdate_(req),
-  staffAdd: req => staffAdd_(req)
+  generate: (req, a) => {
+    if (!canManage_(a, req.store)) throw new Error('その店舗には投稿できません');
+    return generateDraft_(req);
+  },
+  queue: (req, a) => {
+    if (req.store === undefined || req.store === '') req.store = a.role === 'admin' ? COMMON_STORE : (a.store || COMMON_STORE);
+    if (!canManage_(a, req.store)) throw new Error('その店舗には投稿できません');
+    req._by = a.name;
+    req._notifyTo = a.userId || '';
+    return queueDraft_(req);
+  },
+  translate: (req, a) => { requireManual_(a, req.id); return translateManual_(req); },
+  progress: (req, a) => progressReport_(a),
+  stepStats: (req, a) => { requireManual_(a, req.id); return stepStats_(req.id); },
+  reports: (req, a) => { requireManual_(a, req.id); return listReports_(req.id); },
+  staffList: (req, a) => { requireAdmin_(a); return staffAdminList_(); },
+  staffUpdate: (req, a) => { requireAdmin_(a); return staffUpdate_(req); },
+  staffAdd: (req, a) => { requireAdmin_(a); return staffAdd_(req); }
 };

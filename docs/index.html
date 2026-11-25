@@ -24,7 +24,15 @@
       <p class="muted" style="margin:6px 0 0">見た記録に使います。次回からは自動で選ばれます。</p>
     </div>
     <!-- LINEで本人確認できているとき -->
-    <p class="muted hidden" id="whoLine"></p>
+    <p class="muted hidden" id="whoLine" style="margin:0 0 8px"></p>
+
+    <div class="card" style="padding:10px">
+      <input type="text" id="q" placeholder="検索（タイトル・#タグ・フォルダ）">
+      <div class="filters">
+        <select id="fStore"><option value="">すべての店舗</option></select>
+        <select id="fFolder"><option value="">すべてのフォルダ</option></select>
+      </div>
+    </div>
 
     <div id="list" class="list"><p class="muted">読み込み中…</p></div>
   </div>
@@ -46,8 +54,8 @@
   $('loading').classList.add('hidden');
   $('content').classList.remove('hidden');
 
-  // 管理リンクは、LINEで開いたスタッフには出さない
-  if (me.mode !== 'line') $('adminLink').classList.remove('hidden');
+  // 管理リンクは、管理者と店舗責任者だけに出す
+  if (me.mode !== 'line' || me.canEdit) $('adminLink').classList.remove('hidden');
 
   if (me.mode === 'legacy') {
     const sel = $('staff');
@@ -60,21 +68,70 @@
     $('whoLine').classList.remove('hidden');
   }
 
+  let list = [], meta = { stores: [], folders: [] };
   try {
-    const list = await FM.api('list');
-    const box = $('list');
-    if (!list.length) {
-      box.innerHTML = '<p class="muted">公開中のマニュアルはまだありません。</p>';
-      return;
-    }
-    box.innerHTML = list.map(m => `
-      <a class="item" href="view.html?id=${encodeURIComponent(m.id)}">
-        ${m.youtubeId ? `<img class="thumb" src="https://i.ytimg.com/vi/${FM.esc(m.youtubeId)}/mqdefault.jpg" alt="">` : '<div class="thumb"></div>'}
-        <div class="grow"><strong>${FM.esc(m.title)}</strong></div>
-      </a>`).join('');
+    [list, meta] = await Promise.all([FM.api('list'), FM.api('meta').catch(() => ({ stores: [], folders: [] }))]);
   } catch (e) {
     $('list').innerHTML = `<p class="muted">読み込めませんでした：${FM.esc(e.message)}</p>`;
+    return;
   }
+
+  // 絞り込みの選択肢（実際にマニュアルがあるものだけ）
+  const used = (key) => Array.from(new Set(list.map(m => m[key]).filter(x => x)));
+  const order = (names, ref) => names.sort((a, b) => {
+    const ia = ref.indexOf(a), ib = ref.indexOf(b);
+    return (ia < 0 ? 999 : ia) - (ib < 0 ? 999 : ib) || a.localeCompare(b, 'ja');
+  });
+  const stores = order(used('store'), meta.stores);
+  const folders = order(used('folder'), meta.folders);
+  $('fStore').innerHTML += stores.map(s => `<option>${FM.esc(s)}</option>`).join('');
+  $('fFolder').innerHTML += folders.map(f => `<option>${FM.esc(f)}</option>`).join('') + (list.some(m => !m.folder) ? '<option value="__none">フォルダなし</option>' : '');
+  $('fStore').value = FM.store.get('fStore', '');
+  if ($('fStore').value !== FM.store.get('fStore', '')) $('fStore').value = '';
+
+  function render() {
+    const q = $('q').value.trim().toLowerCase();
+    const words = q.split(/\s+/).filter(w => w).map(w => w.replace(/^[#＃]/, ''));
+    const fs = $('fStore').value, ff = $('fFolder').value;
+    const hit = list.filter(m => {
+      if (fs && m.store !== fs) return false;
+      if (ff === '__none' ? !!m.folder : (ff && m.folder !== ff)) return false;
+      const hay = [m.title, m.folder, m.store].concat(m.tags || []).join(' ').toLowerCase();
+      return words.every(w => hay.indexOf(w) >= 0);
+    });
+    if (!list.length) { $('list').innerHTML = '<p class="muted">公開中のマニュアルはまだありません。</p>'; return; }
+    if (!hit.length) { $('list').innerHTML = '<p class="muted">見つかりませんでした。</p>'; return; }
+
+    // フォルダごとにまとめる
+    const groups = {};
+    hit.forEach(m => { const k = m.folder || 'フォルダなし'; (groups[k] = groups[k] || []).push(m); });
+    const keys = order(Object.keys(groups), meta.folders.concat(['フォルダなし']));
+    $('list').innerHTML = keys.map(k => `
+      <div class="folder-head">📁 ${FM.esc(k)} <span class="count">${groups[k].length}</span></div>
+      ${groups[k].map(m => `
+        <a class="item" href="view.html?id=${encodeURIComponent(m.id)}">
+          ${m.youtubeId ? `<img class="thumb" src="https://i.ytimg.com/vi/${FM.esc(m.youtubeId)}/mqdefault.jpg" alt="">` : '<div class="thumb"></div>'}
+          <div class="grow">
+            <div><span class="chip-store">${FM.esc(m.store)}</span><strong>${FM.esc(m.title)}</strong></div>
+            <div>${FM.tagsHtml(m.tags)}</div>
+          </div>
+        </a>`).join('')}`).join('');
+  }
+
+  if (location.hash.length > 1) { try { $('q').value = decodeURIComponent(location.hash.slice(1)); } catch (e) {} }
+  $('q').addEventListener('input', render);
+  $('fStore').addEventListener('change', () => { FM.store.set('fStore', $('fStore').value); render(); });
+  $('fFolder').addEventListener('change', render);
+  // タグを押すと、そのタグで検索
+  $('list').addEventListener('click', e => {
+    const t = e.target.closest('.tag');
+    if (!t) return;
+    e.preventDefault();
+    $('q').value = '#' + t.dataset.tag;
+    render();
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  });
+  render();
 })();
 </script>
 </body>

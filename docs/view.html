@@ -23,6 +23,7 @@
     </label>
   </div>
 
+  <div id="metaLine" style="margin:0 0 8px"></div>
   <div class="player-wrap"><div id="player"></div></div>
   <div class="progress" style="margin-top:8px"><div id="bar"></div></div>
   <p class="muted" id="watchInfo" style="margin:4px 0 0">見た割合 0%</p>
@@ -83,11 +84,6 @@
   }
   staff = me.name || '';
   document.getElementById('content').classList.remove('hidden');
-  if (me.canEdit) {
-    const el = document.getElementById('editLink');
-    el.href = 'edit.html?id=' + encodeURIComponent(id);
-    el.classList.remove('hidden');
-  }
 
   try {
     manual = await FM.api('get', { id });
@@ -98,6 +94,22 @@
   }
   document.title = manual.title;
   document.getElementById('title').textContent = manual.title;
+  document.getElementById('metaLine').innerHTML =
+    `<span class="chip-store">${FM.esc(manual.store)}</span>` +
+    (manual.folder ? `<span class="muted" style="font-size:13px">📁 ${FM.esc(manual.folder)}</span> ` : '') +
+    `<div>${FM.tagsHtml(manual.tags)}</div>`;
+  // タグを押したら、一覧でそのタグを検索
+  document.getElementById('metaLine').addEventListener('click', e => {
+    const t = e.target.closest('.tag'); if (!t) return;
+    location.href = 'index.html#' + encodeURIComponent('#' + t.dataset.tag);
+  });
+  // 編集ボタン：管理者と、その店舗の責任者だけ
+  const es = me.editStores || (me.canEdit ? ['*'] : []);
+  if (es.indexOf('*') >= 0 || es.indexOf(manual.store) >= 0) {
+    const el = document.getElementById('editLink');
+    el.href = 'edit.html?id=' + encodeURIComponent(id);
+    el.classList.remove('hidden');
+  }
 
   // 言語
   const langSel = document.getElementById('lang');
