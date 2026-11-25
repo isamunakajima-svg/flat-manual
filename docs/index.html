@@ -110,7 +110,7 @@
       <div class="folder-head">📁 ${FM.esc(k)} <span class="count">${groups[k].length}</span></div>
       ${groups[k].map(m => `
         <a class="item" href="view.html?id=${encodeURIComponent(m.id)}">
-          ${m.youtubeId ? `<img class="thumb" src="https://i.ytimg.com/vi/${FM.esc(m.youtubeId)}/mqdefault.jpg" alt="">` : '<div class="thumb"></div>'}
+          ${FM.thumbHtml(m)}
           <div class="grow">
             <div><span class="chip-store">${FM.esc(m.store)}</span><strong>${FM.esc(m.title)}</strong></div>
             <div>${FM.tagsHtml(m.tags)}</div>

@@ -20,8 +20,10 @@ const GEMINI_BASE = 'https://generativelanguage.googleapis.com';
 const ADMIN_PAGE_URL = 'https://isamunakajima-svg.github.io/flat-manual/admin.html';
 
 const SHEETS = {
-  manuals: ['id', 'title', 'youtubeId', 'status', 'createdAt', 'updatedAt', 'memo', 'note', 'store', 'folder', 'tags', 'author', 'authorId', 'driveFileId'],
-  steps: ['manualId', 'idx', 'start'].concat(flatLang_(['title', 'desc'])),
+  manuals: ['id', 'title', 'youtubeId', 'status', 'createdAt', 'updatedAt', 'memo', 'note', 'store', 'folder', 'tags', 'author', 'authorId', 'driveFileId',
+    'type', 'yieldQty', 'yieldUnit', 'body', 'cover', 'coverThumb'],
+  steps: ['manualId', 'idx', 'start'].concat(flatLang_(['title', 'desc'])).concat(['image']),
+  ingredients: ['manualId', 'idx', 'grp', 'name', 'amount', 'unit', 'note'],
   subs: ['manualId', 'idx', 'start', 'end'].concat(LANGS.map(l => 'text_' + l)),
   quiz: ['manualId', 'idx', 'question', 'choices', 'answer'],
   staff: ['name', 'active', 'lineUserId', 'lineName', 'approved', 'registeredAt', 'store', 'role'],
@@ -73,7 +75,7 @@ function seedLists_() {
 function ensureHeaders_() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   let created = false;
-  ['stores', 'folders'].forEach(name => {
+  Object.keys(SHEETS).forEach(name => {
     if (!ss.getSheetByName(name)) {
       const sh = ss.insertSheet(name);
       sh.getRange(1, 1, 1, SHEETS[name].length).setValues([SHEETS[name]]).setFontWeight('bold');
@@ -82,7 +84,7 @@ function ensureHeaders_() {
     }
   });
   if (created) seedLists_();
-  ['staff', 'logs', 'manuals'].forEach(name => {
+  ['staff', 'logs', 'manuals', 'steps'].forEach(name => {
     const sh = ss.getSheetByName(name);
     if (!sh) return;
     const header = SHEETS[name];
@@ -302,7 +304,8 @@ function listManuals_(includeDrafts) {
   return readAll_('manuals')
     .filter(m => m.id && (includeDrafts || m.status === 'published'))
     .map(m => ({ id: String(m.id), title: m.title, youtubeId: m.youtubeId, status: m.status, updatedAt: m.updatedAt, note: m.note || '',
-      store: normStore_(m.store), folder: String(m.folder || ''), tags: parseTags_(m.tags), author: String(m.author || '') }))
+      store: normStore_(m.store), folder: String(m.folder || ''), tags: parseTags_(m.tags), author: String(m.author || ''),
+      type: String(m.type || 'video'), coverThumb: String(m.coverThumb || '') }))
     .sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
 }
 
@@ -312,10 +315,14 @@ function getManual_(id, includeDrafts) {
   if (!includeDrafts && m.status !== 'published') throw new Error('このマニュアルはまだ公開されていません');
   const byIdx = (a, b) => Number(a.idx) - Number(b.idx);
   const steps = readAll_('steps').filter(r => String(r.manualId) === String(id)).sort(byIdx).map(r => {
-    const o = { start: Number(r.start) || 0, title: {}, desc: {} };
+    const o = { start: Number(r.start) || 0, title: {}, desc: {}, image: String(r.image || '') };
     LANGS.forEach(l => { o.title[l] = r['title_' + l] || ''; o.desc[l] = r['desc_' + l] || ''; });
     return o;
   });
+  const ingredients = readAll_('ingredients').filter(r => String(r.manualId) === String(id)).sort(byIdx).map(r => ({
+    group: String(r.grp || ''), name: String(r.name || ''), amount: String(r.amount === undefined ? '' : r.amount),
+    unit: String(r.unit || ''), note: String(r.note || '')
+  }));
   const subs = readAll_('subs').filter(r => String(r.manualId) === String(id)).sort(byIdx).map(r => {
     const o = { start: Number(r.start) || 0, end: Number(r.end) || 0, text: {} };
     LANGS.forEach(l => o.text[l] = r['text_' + l] || '');
@@ -330,6 +337,9 @@ function getManual_(id, includeDrafts) {
     id: String(m.id), title: m.title, youtubeId: m.youtubeId, status: m.status, memo: m.memo, note: m.note || '',
     store: normStore_(m.store), folder: String(m.folder || ''), tags: parseTags_(m.tags),
     author: String(m.author || ''), driveFileId: String(m.driveFileId || ''),
+    type: String(m.type || 'video'), yieldQty: m.yieldQty === '' || m.yieldQty === undefined ? '' : String(m.yieldQty),
+    yieldUnit: String(m.yieldUnit || ''), body: String(m.body || ''), cover: String(m.cover || ''),
+    ingredients: ingredients,
     steps: steps, subs: subs, quiz: quiz, langs: LANGS, langNames: LANG_NAMES
   };
 }
@@ -357,6 +367,12 @@ function saveManual_(m) {
       author: m.author !== undefined ? m.author : (base.author || ''),
       authorId: m.authorId !== undefined ? m.authorId : (base.authorId || ''),
       driveFileId: m.driveFileId !== undefined ? m.driveFileId : (base.driveFileId || ''),
+      type: m.type !== undefined ? (m.type === 'recipe' ? 'recipe' : 'video') : (base.type || 'video'),
+      yieldQty: m.yieldQty !== undefined ? m.yieldQty : (base.yieldQty === undefined ? '' : base.yieldQty),
+      yieldUnit: m.yieldUnit !== undefined ? m.yieldUnit : (base.yieldUnit || ''),
+      body: m.body !== undefined ? String(m.body).slice(0, 20000) : (base.body || ''),
+      cover: m.cover !== undefined ? m.cover : (base.cover || ''),
+      coverThumb: m.coverThumb !== undefined ? (/^data:image\/(jpeg|png|webp);base64,/.test(m.coverThumb) ? String(m.coverThumb).slice(0, 45000) : '') : (base.coverThumb || ''),
       updatedAt: now
     });
     const row = rowFrom_('manuals', rec);
@@ -373,10 +389,13 @@ function saveManual_(m) {
     }
 
     if (m.steps) replaceRows_('steps', id, m.steps.map((s, i) => {
-      const o = { idx: i, start: round1_(s.start) };
+      const o = { idx: i, start: round1_(s.start), image: s.image || '' };
       LANGS.forEach(l => { o['title_' + l] = (s.title || {})[l] || ''; o['desc_' + l] = (s.desc || {})[l] || ''; });
       return o;
     }));
+    if (m.ingredients) replaceRows_('ingredients', id, m.ingredients.map((g, i) => ({
+      idx: i, grp: g.group || '', name: g.name || '', amount: String(g.amount === undefined ? '' : g.amount), unit: g.unit || '', note: g.note || ''
+    })));
     if (m.subs) replaceRows_('subs', id, m.subs.map((s, i) => {
       const o = { idx: i, start: round1_(s.start), end: round1_(s.end) };
       LANGS.forEach(l => o['text_' + l] = (s.text || {})[l] || '');
@@ -392,7 +411,17 @@ function saveManual_(m) {
 function deleteManual_(id) {
   PropertiesService.getScriptProperties().deleteProperty('job_' + id);
   return withLock_(() => {
-    ['steps', 'subs', 'quiz'].forEach(n => replaceRows_(n, id, []));
+    // レシピの写真はゴミ箱へ（ほかのマニュアルで使っていないものだけ）
+    try {
+      const mine = readAll_('steps').filter(r => String(r.manualId) === String(id)).map(r => String(r.image || '')).filter(x => x);
+      const cover = (readAll_('manuals').find(r => String(r.id) === String(id)) || {}).cover;
+      if (cover) mine.push(String(cover));
+      const others = readAll_('steps').filter(r => String(r.manualId) !== String(id)).map(r => String(r.image || ''));
+      mine.filter((x, i) => mine.indexOf(x) === i && others.indexOf(x) < 0).forEach(fid => {
+        try { if (isPhotoFile_(fid)) DriveApp.getFileById(fid).setTrashed(true); } catch (e) {}
+      });
+    } catch (e) { console.warn('写真の片付けに失敗: ' + e); }
+    ['steps', 'subs', 'quiz', 'ingredients'].forEach(n => replaceRows_(n, id, []));
     const sh = sheet_('manuals');
     const rows = readAll_('manuals');
     const i = rows.findIndex(r => String(r.id) === String(id));
@@ -649,7 +678,7 @@ function progressReport_(actor) {
     if (actor.role !== 'admin' && staff.indexOf(String(l.staff)) < 0) return;
     const key = l.staff + '\u0000' + l.manualId;
     const dur = Number(l.duration) || 0;
-    const pct = dur ? Math.min(100, Math.round(Number(l.watchedSec) / dur * 100)) : 0;
+    const pct = dur ? Math.min(100, Math.round(Number(l.watchedSec) / dur * 100)) : ((l.completed === true || l.confirmed === true) ? 100 : 0);
     const c = cells[key] || { pct: 0, completed: false, confirmed: false, quiz: '', sessions: 0, last: '' };
     c.pct = Math.max(c.pct, pct);
     c.completed = c.completed || l.completed === true;
@@ -951,6 +980,13 @@ function processJobs() {
     if (Date.now() - started > 4 * 60 * 1000) { waiting = true; return; } // 時間切れ前に次回へ回す
     const job = JSON.parse(all[key]);
     try {
+      if (job.kind === 'recipe') {
+        generateRecipe_(job);
+        props.deleteProperty(key);
+        const mr = readAll_('manuals').find(r => String(r.id) === String(job.id)) || {};
+        notifyDone_(job.id, mr.title || job.title, '', job.notifyTo);
+        return;
+      }
       // Geminiの読み込みが終わっているか
       const files = [job.video].concat(job.audio ? [job.audio] : []);
       for (const f of files) {
@@ -988,6 +1024,128 @@ function processJobs() {
   if (waiting) scheduleJobs_(60);
 }
 
+/* ========== 写真（レシピ用） ========== */
+
+function photoFolderId_() {
+  const props = PropertiesService.getScriptProperties();
+  let id = props.getProperty('PHOTO_FOLDER_ID');
+  if (id) { try { DriveApp.getFolderById(id); return id; } catch (e) {} }
+  id = DriveApp.createFolder('FLAT マニュアル 写真').getId();
+  props.setProperty('PHOTO_FOLDER_ID', id);
+  return id;
+}
+
+/** このアプリの写真フォルダのファイルか（ほかのDriveのファイルを読ませないため） */
+function isPhotoFile_(fileId) {
+  const folderId = photoFolderId_();
+  const it = DriveApp.getFileById(fileId).getParents();
+  while (it.hasNext()) if (it.next().getId() === folderId) return true;
+  return false;
+}
+
+function uploadImage_(req) {
+  const m = String(req.data || '').match(/^data:(image\/(jpeg|png|webp));base64,(.+)$/);
+  if (!m) throw new Error('画像の形式が違います');
+  const bytes = Utilities.base64Decode(m[3]);
+  if (bytes.length > 3 * 1024 * 1024) throw new Error('画像が大きすぎます');
+  const blob = Utilities.newBlob(bytes, m[1], 'photo_' + Utilities.formatDate(new Date(), 'Asia/Tokyo', 'yyyyMMdd_HHmmss') + '.' + m[2].replace('jpeg', 'jpg'));
+  const file = DriveApp.getFolderById(photoFolderId_()).createFile(blob);
+  return { id: file.getId() };
+}
+
+function getImage_(req) {
+  const id = String(req.id || '');
+  if (!/^[A-Za-z0-9_-]{10,}$/.test(id)) throw new Error('画像が見つかりません');
+  const cache = CacheService.getScriptCache();
+  const hit = cache.get('img_' + id);
+  if (hit) return { data: hit };
+  if (!isPhotoFile_(id)) throw new Error('画像が見つかりません');
+  const blob = DriveApp.getFileById(id).getBlob();
+  const data = 'data:' + blob.getContentType() + ';base64,' + Utilities.base64Encode(blob.getBytes());
+  if (data.length < 95000) { try { cache.put('img_' + id, data, 21600); } catch (e) {} }
+  return { data: data };
+}
+
+/* ========== レシピの下書き（写真とメモから、裏で作る） ========== */
+
+const RECIPE_PROMPT = [
+  'あなたはパン屋のレシピ・作業マニュアルを作る担当です。',
+  '添付の写真と、下のメモ（Talknoteの投稿をそのまま貼ったものなどもあります）から、新人スタッフ向けのレシピ／作業マニュアルの下書きを日本語で作ってください。',
+  '写真は添付した順に 0, 1, 2… と番号が付いています。',
+  '',
+  'メモ:',
+  '{{MEMO}}',
+  '',
+  '次の形のJSONだけを返してください（説明文は不要）。',
+  '{',
+  '  "title": "タイトル（20字以内）",',
+  '  "yieldQty": 20, "yieldUnit": "個分",',
+  '  "ingredients": [ { "group": "生地", "name": "強力粉", "amount": "1000", "unit": "g", "note": "" } ],',
+  '  "steps": [ { "title": "見出し（15字以内）", "desc": "やることとコツ（80字以内）", "photo": 0 } ],',
+  '  "body": "補足・注意点（なければ空）",',
+  '  "tags": ["検索用キーワード（#なし）"],',
+  '  "quiz": [ { "question": "確認の問題", "choices": ["選択肢1", "選択肢2", "選択肢3"], "answer": 0 } ]',
+  '}',
+  '',
+  'ルール:',
+  '- 材料表はメモにある材料と分量をそのまま使う。分からない分量は amount を空にする。勝手に数値を作らない。',
+  '- amount は数字だけ（例 "1000"、"1.5"）。「適量」などは amount に文字で入れて unit は空。',
+  '- 材料や分量が無い作業（片付け・機械の分解など）は ingredients を空配列、yieldQty は null にする。',
+  '- steps は 3〜12 個。photo はその手順に合う写真の番号、合うものが無ければ null。',
+  '- tags は 3〜5 個。quiz は大事なポイントについて 1〜3 問。answer は正解の番号（0始まり）。',
+].join('\n');
+
+function queueRecipe_(req) {
+  const images = (req.images || []).filter(x => x).slice(0, 12);
+  const saved = saveManual_({
+    type: 'recipe', title: req.title || '（作成中）', status: 'processing', note: 'AIが下書きを作っています',
+    store: req.store, folder: req.folder || '', tags: req.tags || '', memo: String(req.memo || '').slice(0, 8000),
+    cover: images[0] || '', coverThumb: req.coverThumb || '', _by: req._by || '',
+    author: req._by || '', authorId: req._notifyTo || ''
+  });
+  const job = { kind: 'recipe', id: saved.id, title: req.title || '', images: images, tags: req.tags || '', notifyTo: req._notifyTo || '', queuedAt: Date.now(), tries: 0 };
+  PropertiesService.getScriptProperties().setProperty('job_' + saved.id, JSON.stringify(job));
+  scheduleJobs_(5);
+  return { id: saved.id, queued: true };
+}
+
+function generateRecipe_(job) {
+  const row = readAll_('manuals').find(r => String(r.id) === String(job.id)) || {};
+  const parts = [];
+  job.images.forEach(fid => {
+    try {
+      const blob = DriveApp.getFileById(fid).getBlob();
+      parts.push({ inlineData: { mimeType: blob.getContentType(), data: Utilities.base64Encode(blob.getBytes()) } });
+    } catch (e) { parts.push({ text: '（写真を読み込めませんでした）' }); }
+  });
+  parts.push({ text: RECIPE_PROMPT.replace('{{MEMO}}', String(row.memo || '（メモなし）')) });
+  const out = callGemini_(parts, 'レシピの下書き');
+  const ja = LANGS[0];
+  const used = [];
+  const steps = (out.steps || []).map(s => {
+    const o = { start: 0, title: {}, desc: {}, image: '' };
+    o.title[ja] = s.title || ''; o.desc[ja] = s.desc || '';
+    const pi = Number(s.photo);
+    if (s.photo !== null && s.photo !== undefined && job.images[pi]) { o.image = job.images[pi]; used.push(pi); }
+    return o;
+  });
+  // AIが使わなかった写真は、写真だけの手順として最後に足す（消えないように）
+  job.images.forEach((fid, i) => {
+    if (used.indexOf(i) < 0 && i > 0) { const o = { start: 0, title: {}, desc: {}, image: fid }; o.title[ja] = '写真'; o.desc[ja] = ''; steps.push(o); }
+  });
+  saveManual_({
+    id: job.id, type: 'recipe', status: 'draft', note: '',
+    title: job.title || out.title || '新しいレシピ',
+    yieldQty: out.yieldQty === null || out.yieldQty === undefined ? '' : out.yieldQty,
+    yieldUnit: out.yieldUnit || '',
+    body: out.body || '',
+    tags: parseTags_(job.tags).concat(parseTags_(out.tags || [])),
+    ingredients: (out.ingredients || []).map(g => ({ group: g.group || '', name: g.name || '', amount: g.amount === null || g.amount === undefined ? '' : String(g.amount), unit: g.unit || '', note: g.note || '' })),
+    steps: steps,
+    quiz: (out.quiz || []).map(q => ({ question: q.question || '', choices: (q.choices || []).map(String), answer: Number(q.answer) || 0 }))
+  });
+}
+
 /* ========== 公開申請（店舗責任者 → 管理者） ========== */
 
 function editUrl_(id) {
@@ -1020,7 +1178,7 @@ function requestPublish_(req, actor) {
   if (m.status === 'published') throw new Error('すでに公開されています');
   const row = readAll_('manuals').find(r => String(r.id) === String(m.id)) || {};
   saveManual_({ id: m.id, status: 'review', note: '公開の確認待ち（' + actor.name + '）', author: row.author || actor.name, authorId: row.authorId || actor.userId || '' });
-  const text = '【FLAT マニュアル】' + actor.name + ' さんが「' + m.title + '」の公開を申請しました。' + (m.youtubeId ? '' : '\n（YouTube未登録：動画はDriveにあります）');
+  const text = '【FLAT マニュアル】' + actor.name + ' さんが「' + m.title + '」の公開を申請しました。' + (m.youtubeId || m.type === 'recipe' ? '' : '\n（YouTube未登録：動画はDriveにあります）');
   pushButton_(text, '確認する', editUrl_(m.id), null, false);
   return { status: 'review' };
 }
@@ -1029,7 +1187,7 @@ function reviewDecision_(req, actor) {
   const m = getManual_(req.id, true);
   const row = readAll_('manuals').find(r => String(r.id) === String(m.id)) || {};
   if (req.decision === 'publish') {
-    if (!m.youtubeId) throw new Error('YouTubeのURLを入れてから公開してください');
+    if (!m.youtubeId && m.type !== 'recipe') throw new Error('YouTubeのURLを入れてから公開してください');
     saveManual_({ id: m.id, status: 'published', note: '' });
     if (row.authorId) pushButton_('【FLAT マニュアル】「' + m.title + '」が公開されました。ありがとうございます！', '見る', ADMIN_PAGE_URL.replace('admin.html', 'view.html') + '?id=' + encodeURIComponent(m.id), [row.authorId], true);
     return { status: 'published' };
@@ -1088,6 +1246,7 @@ function translateManual_(req) {
 const PUBLIC_ACTIONS = {
   me: req => me_(req),
   meta: req => { requireViewer_(req); return meta_(); },
+  image: req => { requireViewer_(req); return getImage_(req); },
   register: req => register_(req),
   list: req => { requireViewer_(req); return listManuals_(false); },
   get: req => { requireViewer_(req); return getManual_(req.id, false); },
@@ -1121,8 +1280,17 @@ const ADMIN_ACTIONS = {
       }
       return out;
     }
-    if (m.status === 'published' && !(m.youtubeId || (cur && cur.youtubeId))) throw new Error('YouTubeのURLを入れてから公開してください');
+    const isRecipe = (m.type || (cur && cur.type)) === 'recipe';
+    if (m.status === 'published' && !isRecipe && !(m.youtubeId || (cur && cur.youtubeId))) throw new Error('YouTubeのURLを入れてから公開してください');
     return saveManual_(m);
+  },
+  uploadImage: req => uploadImage_(req),
+  queueRecipe: (req, a) => {
+    if (req.store === undefined || req.store === '') req.store = a.role === 'admin' ? COMMON_STORE : (a.store || COMMON_STORE);
+    if (!canManage_(a, req.store)) throw new Error('その店舗には投稿できません');
+    req._by = a.name;
+    req._notifyTo = a.userId || '';
+    return queueRecipe_(req);
   },
   requestPublish: (req, a) => { requireManual_(a, req.id); return requestPublish_(req, a); },
   review: (req, a) => { requireAdmin_(a); return reviewDecision_(req, a); },

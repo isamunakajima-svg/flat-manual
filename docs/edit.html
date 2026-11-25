@@ -34,7 +34,7 @@
     <div id="reviewBox" class="card hidden"></div>
     <div class="card">
       <label class="field"><span>タイトル</span><input type="text" id="title"></label>
-      <label class="field"><span>YouTubeのURL</span><input type="url" id="yt" placeholder="https://youtu.be/..."></label>
+      <label class="field video-edit"><span>YouTubeのURL</span><input type="url" id="yt" placeholder="https://youtu.be/..."></label>
       <div class="filters" style="margin:0 0 12px">
         <label><span class="muted" style="font-size:14px">店舗</span><select id="store"></select></label>
         <label><span class="muted" style="font-size:14px">フォルダ（新しく作るなら入力）</span><input type="text" id="folder" list="folderList"></label>
@@ -46,6 +46,21 @@
         <span class="grow editor-only muted" id="editorStatus" style="font-size:14px"></span>
         <a class="btn small" id="previewLink" target="_blank">表示を確認</a>
       </div>
+    </div>
+
+    <!-- 写真・レシピ用 -->
+    <div class="card hidden" id="recipeCard">
+      <h2>表紙と分量</h2>
+      <img id="coverImg" class="recipe-cover hidden" alt="" style="max-height:240px">
+      <div class="row" style="margin:8px 0 12px">
+        <label class="btn small" style="margin:0">表紙の写真を変える<input type="file" accept="image/*" id="coverFile" class="hidden"></label>
+      </div>
+      <div class="row" style="margin-bottom:12px">
+        <span class="muted">できあがり</span>
+        <input type="text" inputmode="decimal" id="yieldQty" style="width:90px" placeholder="20">
+        <input type="text" id="yieldUnit" style="width:120px" placeholder="個分">
+      </div>
+      <label class="field" style="margin:0"><span>補足（注意点や説明など）</span><textarea id="body" style="min-height:120px"></textarea></label>
     </div>
 
     <div id="playerCard" class="hidden">
@@ -67,8 +82,9 @@
     </div>
 
     <div class="tabs">
+      <button data-tab="ingr" class="hidden" id="ingrTabBtn">材料</button>
       <button data-tab="steps" class="on">手順</button>
-      <button data-tab="subs">字幕</button>
+      <button data-tab="subs" id="subsTabBtn">字幕</button>
       <button data-tab="quiz">テスト</button>
       <button data-tab="reports">報告</button>
     </div>
@@ -76,6 +92,13 @@
     <section id="tab-steps">
       <div id="stepsList"></div>
       <button id="addStep" style="width:100%">＋ 手順を足す（今の位置から）</button>
+    </section>
+
+    <section id="tab-ingr" class="hidden">
+      <p class="muted" style="margin-top:0">グループ（例：生地・フィリング）・材料・分量・単位・メモ。分量は数字だけにすると、スタッフの画面で個数に合わせて計算できます。</p>
+      <div class="ingr-edit muted" style="font-size:12px"><span>グループ</span><span>材料</span><span>分量</span><span>単位</span><span></span></div>
+      <div id="ingrList"></div>
+      <button id="addIngr" style="width:100%">＋ 材料を足す</button>
     </section>
 
     <section id="tab-subs" class="hidden">
@@ -126,6 +149,7 @@
     } catch (e) { FM.toast(e.message, true); return; }
     meta = Object.assign({ stores: [], folders: [] }, meta);
     m.store = m.store || '共通'; m.tags = m.tags || [];
+    m.type = m.type || 'video'; m.ingredients = m.ingredients || [];
     const stores = actor.role === 'admin' ? meta.stores : ['共通'].concat(actor.store ? [actor.store] : []);
     if (stores.indexOf(m.store) < 0) stores.push(m.store);
     $('store').innerHTML = stores.map(x => `<option ${x === m.store ? 'selected' : ''}>${FM.esc(x)}</option>`).join('');
@@ -156,6 +180,8 @@
     }
     $('previewLink').href = 'view.html?id=' + encodeURIComponent(m.id);
     $('lang').innerHTML = m.langs.map(l => `<option value="${l}">${FM.esc(m.langNames[l] || l)}</option>`).join('');
+    setupRecipe();
+    if (m.type === 'recipe') { document.querySelector('.tabs button[data-tab=ingr]').click(); }
     renderAll();
     setupPlayer();
     FMA.adminApi('stepStats', { id }).then(s => { stats = s || {}; renderSteps(); }).catch(() => {});
@@ -170,7 +196,7 @@
   // タブ
   document.querySelectorAll('.tabs button').forEach(b => b.onclick = () => {
     document.querySelectorAll('.tabs button').forEach(x => x.classList.toggle('on', x === b));
-    ['steps', 'subs', 'quiz', 'reports'].forEach(t => $('tab-' + t).classList.toggle('hidden', t !== b.dataset.tab));
+    ['ingr', 'steps', 'subs', 'quiz', 'reports'].forEach(t => $('tab-' + t).classList.toggle('hidden', t !== b.dataset.tab));
   });
 
   /* ---------- 公開申請・確認 ---------- */
@@ -212,7 +238,7 @@
   async function decide(decision) {
     if (decision === 'publish') {
       if (changed && !(await save())) return;
-      if (!$('yt').value.trim()) { FM.toast('先にYouTubeのURLを入れて保存してください', true); return; }
+      if (m.type !== 'recipe' && !$('yt').value.trim()) { FM.toast('先にYouTubeのURLを入れて保存してください', true); return; }
     }
     const comment = decision === 'reject' ? ($('rvComment').value || '').trim() : '';
     if (decision === 'reject' && !comment && !window.confirm('理由なしで差し戻しますか？')) return;
@@ -225,6 +251,7 @@
 
   /* ---------- 動画 ---------- */
   async function setupPlayer() {
+    if (m.type === 'recipe') return;
     if (!m.youtubeId) { $('noVideo').classList.remove('hidden'); return; }
     $('playerCard').classList.remove('hidden');
     YTref = await FM.loadYouTube();
@@ -252,11 +279,94 @@
   $('fwd2').onclick = () => seek(now() + 2);
 
   /* ---------- 表示 ---------- */
-  function renderAll() { renderSteps(); renderSubs(); renderQuiz(); }
+  function renderAll() { renderSteps(); renderSubs(); renderQuiz(); renderIngr(); }
+
+  /* ---------- 写真・レシピ ---------- */
+  let coverThumb; // 表紙を変えたときだけ送る
+  function setupRecipe() {
+    const isRecipe = m.type === 'recipe';
+    $('recipeCard').classList.toggle('hidden', !isRecipe);
+    $('ingrTabBtn').classList.toggle('hidden', !isRecipe);
+    $('subsTabBtn').classList.toggle('hidden', isRecipe);
+    document.querySelectorAll('.video-edit').forEach(el => el.classList.toggle('hidden', isRecipe));
+    $('addStep').textContent = isRecipe ? '＋ 手順を足す' : '＋ 手順を足す（今の位置から）';
+    if (!isRecipe) return;
+    $('noVideo').classList.add('hidden');
+    $('yieldQty').value = m.yieldQty || '';
+    $('yieldUnit').value = m.yieldUnit || '';
+    $('body').value = m.body || '';
+    if (m.cover) { $('coverImg').setAttribute('data-photo', m.cover); $('coverImg').classList.remove('hidden'); FM.loadPhotos($('recipeCard')); }
+    ['yieldQty', 'yieldUnit', 'body'].forEach(k => $(k).addEventListener('input', markChanged));
+  }
+  async function uploadPhoto(file) {
+    const full = await FM.resizeImage(file, 1600, 0.82);
+    const thumb = await FM.resizeImage(file, 200, 0.6);
+    FM.toast('写真を送っています…');
+    const r = await FMA.adminApi('uploadImage', { data: full });
+    return { id: r.id, thumb, full };
+  }
+  $('coverFile').onchange = async () => {
+    const f = $('coverFile').files[0]; if (!f) return;
+    try {
+      const p = await uploadPhoto(f);
+      m.cover = p.id; coverThumb = p.thumb;
+      $('coverImg').src = p.full; $('coverImg').dataset.loaded = p.id; $('coverImg').classList.remove('hidden');
+      markChanged(); FM.toast('表紙を変えました。保存してください');
+    } catch (e) { FM.toast(e.message, true); }
+    $('coverFile').value = '';
+  };
+
+  function renderIngr() {
+    if (m.type !== 'recipe') return;
+    $('ingrList').innerHTML = m.ingredients.map((g, i) => `
+      <div class="edit-row" data-i="${i}" style="padding:6px">
+        <div class="ingr-edit" style="margin:0">
+          <input type="text" data-f="group" value="${FM.esc(g.group)}" placeholder="生地">
+          <input type="text" data-f="name" value="${FM.esc(g.name)}" placeholder="強力粉">
+          <input type="text" data-f="amount" value="${FM.esc(g.amount)}" placeholder="1000" inputmode="decimal">
+          <input type="text" data-f="unit" value="${FM.esc(g.unit)}" placeholder="g">
+          <button class="small danger" data-act="del">×</button>
+        </div>
+        <input type="text" data-f="note" value="${FM.esc(g.note)}" placeholder="メモ（任意）" style="margin-top:4px;padding:6px;font-size:13px">
+      </div>`).join('') || '<p class="muted">材料がありません（作業マニュアルなら空のままでOK）</p>';
+  }
+  bindList('ingrList', () => m.ingredients, (g, f, v) => { g[f] = v; }, (g, act, i) => {
+    if (act === 'del') { m.ingredients.splice(i, 1); markChanged(); renderIngr(); }
+  });
+  $('addIngr').onclick = () => {
+    const last = m.ingredients[m.ingredients.length - 1];
+    m.ingredients.push({ group: last ? last.group : '', name: '', amount: '', unit: last ? last.unit : 'g', note: '' });
+    markChanged(); renderIngr();
+    const rows = $('ingrList').querySelectorAll('.edit-row');
+    const el = rows[rows.length - 1]; if (el) el.querySelector('[data-f=name]').focus();
+  };
 
   const ref = (txt) => (lang !== baseLang && txt) ? `<div class="muted" style="font-size:13px">日本語：${FM.esc(txt)}</div>` : '';
 
   function renderSteps() {
+    if (m.type === 'recipe') {
+      $('stepsList').innerHTML = m.steps.map((s, i) => `
+      <div class="edit-row" data-i="${i}">
+        <div class="row">
+          <strong>${i + 1}</strong>
+          <button class="small" data-act="up" ${i === 0 ? 'disabled' : ''}>↑</button>
+          <button class="small" data-act="down" ${i === m.steps.length - 1 ? 'disabled' : ''}>↓</button>
+          <span class="grow"></span>
+          <button class="small danger" data-act="del">削除</button>
+        </div>
+        ${ref(s.title[baseLang])}
+        <input type="text" data-f="title" value="${FM.esc(s.title[lang] || '')}" placeholder="見出し">
+        ${ref(s.desc[baseLang])}
+        <textarea data-f="desc" placeholder="やることとコツ">${FM.esc(s.desc[lang] || '')}</textarea>
+        ${s.image ? `<img class="step-photo" data-photo="${FM.esc(s.image)}" alt="" style="width:100%;border-radius:8px;margin-top:6px;background:#eee;min-height:60px">` : ''}
+        <div class="row" style="margin-top:6px">
+          <label class="btn small" style="margin:0">${s.image ? '写真を変える' : '写真を付ける'}<input type="file" accept="image/*" class="hidden" data-act-file="photo"></label>
+          ${s.image ? '<button class="small" data-act="nophoto">写真を外す</button><button class="small" data-act="tocover">表紙にする</button>' : ''}
+        </div>
+      </div>`).join('') || '<p class="muted">手順がありません</p>';
+      FM.loadPhotos($('stepsList'));
+      return;
+    }
     m.steps.sort((a, b) => a.start - b.start);
     $('stepsList').innerHTML = m.steps.map((s, i) => `
       <div class="edit-row" data-i="${i}">
@@ -344,6 +454,27 @@
     if (act === 'now') { s.start = now(); row.querySelector('[data-f=start]').value = fmt(s.start); markChanged(); }
     if (act === 'play') { seek(s.start); player && player.playVideo && player.playVideo(); }
     if (act === 'del' && confirmDel()) { m.steps.splice(i, 1); markChanged(); renderSteps(); }
+    if (act === 'up' && i > 0) { m.steps.splice(i - 1, 0, m.steps.splice(i, 1)[0]); markChanged(); renderSteps(); }
+    if (act === 'down' && i < m.steps.length - 1) { m.steps.splice(i + 1, 0, m.steps.splice(i, 1)[0]); markChanged(); renderSteps(); }
+    if (act === 'nophoto') { s.image = ''; markChanged(); renderSteps(); }
+    if (act === 'tocover') {
+      m.cover = s.image; markChanged();
+      const img = row.querySelector('img');
+      if (img && img.src) FM.resizeImage(img.src, 200, 0.6).then(t => { coverThumb = t; });
+      $('coverImg').src = img ? img.src : ''; $('coverImg').dataset.loaded = s.image; $('coverImg').classList.remove('hidden');
+      FM.toast('表紙にしました。保存してください');
+    }
+  });
+  // 手順の写真を付ける・変える
+  $('stepsList').addEventListener('change', async e => {
+    const inp = e.target.closest('input[data-act-file=photo]'); if (!inp || !inp.files[0]) return;
+    const i = Number(inp.closest('.edit-row').dataset.i);
+    try {
+      const p = await uploadPhoto(inp.files[0]);
+      m.steps[i].image = p.id;
+      if (!m.cover) { m.cover = p.id; coverThumb = p.thumb; }
+      markChanged(); renderSteps();
+    } catch (err) { FM.toast(err.message, true); }
   });
 
   bindList('subsList', () => m.subs, (s, f, v) => {
@@ -377,7 +508,7 @@
 
   const emptyLangs = () => { const o = {}; m.langs.forEach(l => o[l] = ''); return o; };
   $('addStep').onclick = () => {
-    m.steps.push({ start: now(), title: emptyLangs(), desc: emptyLangs() });
+    m.steps.push({ start: m.type === 'recipe' ? 0 : now(), title: emptyLangs(), desc: emptyLangs(), image: '' });
     markChanged(); renderSteps();
   };
   $('addSub').onclick = () => {
@@ -396,14 +527,21 @@
     btns.forEach(b => b.disabled = true);
     try {
       const ytBefore = m.youtubeId;
-      m.steps.sort((a, b) => a.start - b.start);
+      if (m.type !== 'recipe') m.steps.sort((a, b) => a.start - b.start);
       m.subs.sort((a, b) => a.start - b.start);
       const r = await FMA.adminApi('save', { manual: {
         id: m.id, title: $('title').value.trim() || m.title, youtubeId: $('yt').value.trim(),
         store: $('store').value, folder: $('folder').value.trim(), tags: FM.parseTags($('tags').value),
         status: !isAdmin ? undefined : ($('published').checked ? 'published' : (m.status === 'review' || m.status === 'processing' || m.status === 'error' ? m.status : 'draft')),
-        steps: m.steps, subs: m.subs, quiz: m.quiz.map(q => ({ question: q.question, choices: q.choices, answer: q.answer }))
+        steps: m.steps, subs: m.subs, quiz: m.quiz.map(q => ({ question: q.question, choices: q.choices, answer: q.answer })),
+        ingredients: m.type === 'recipe' ? m.ingredients : undefined,
+        yieldQty: m.type === 'recipe' ? $('yieldQty').value.trim() : undefined,
+        yieldUnit: m.type === 'recipe' ? $('yieldUnit').value.trim() : undefined,
+        body: m.type === 'recipe' ? $('body').value : undefined,
+        cover: m.type === 'recipe' ? (m.cover || '') : undefined,
+        coverThumb: coverThumb
       } });
+      coverThumb = undefined;
       changed = false;
       $('saveBtn').textContent = '途中保存';
       if (goBack === true) {

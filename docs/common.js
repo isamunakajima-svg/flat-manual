@@ -189,5 +189,51 @@
     return out;
   }
 
-  window.FM = { api, beacon, store, fmtTime, parseTime, esc, qs, uid, toast, loadYouTube, indexAt, ready, lineLogin, auth, tagsHtml, parseTags, LIFF_ID };
+  // レシピの写真：GAS経由で読み込む（同じ写真は1回だけ）
+  const imgCache = {};
+  function image(id) {
+    if (!id) return Promise.resolve('');
+    if (!imgCache[id]) imgCache[id] = api('image', { id }).then(r => r.data).catch(e => { delete imgCache[id]; throw e; });
+    return imgCache[id];
+  }
+  // <img data-photo="ID"> を順に読み込む
+  function loadPhotos(root) {
+    (root || document).querySelectorAll('img[data-photo]').forEach(el => {
+      const id = el.getAttribute('data-photo');
+      if (!id || el.dataset.loaded === id) return;
+      el.dataset.loaded = id;
+      image(id).then(src => { el.src = src; }).catch(() => { el.alt = '写真を読み込めませんでした'; });
+    });
+  }
+  // スマホの写真を縮めて data URL にする（向きはブラウザが直してくれる）
+  function resizeImage(fileOrSrc, max, quality) {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => {
+        const r = Math.min(1, max / Math.max(img.naturalWidth, img.naturalHeight));
+        const c = document.createElement('canvas');
+        c.width = Math.round(img.naturalWidth * r); c.height = Math.round(img.naturalHeight * r);
+        c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+        resolve(c.toDataURL('image/jpeg', quality || 0.82));
+        if (typeof fileOrSrc !== 'string') URL.revokeObjectURL(img.src);
+      };
+      img.onerror = () => reject(new Error('画像を読み込めませんでした'));
+      img.src = typeof fileOrSrc === 'string' ? fileOrSrc : URL.createObjectURL(fileOrSrc);
+    });
+  }
+  // 分量を何倍かにする（数字でないものはそのまま）
+  function scaleAmount(amount, ratio) {
+    const n = Number(String(amount).replace(/,/g, ''));
+    if (amount === '' || isNaN(n) || ratio === 1) return amount;
+    const v = n * ratio;
+    return String(v >= 100 ? Math.round(v) : Math.round(v * 10) / 10);
+  }
+
+  // 一覧のサムネイル
+  function thumbHtml(m) {
+    if (m.type === 'recipe') return m.coverThumb ? `<img class="thumb" src="${esc(m.coverThumb)}" alt="">` : '<div class="thumb-icon">📷</div>';
+    return m.youtubeId ? `<img class="thumb" src="https://i.ytimg.com/vi/${esc(m.youtubeId)}/mqdefault.jpg" alt="">` : '<div class="thumb-icon">🎬</div>';
+  }
+
+  window.FM = { thumbHtml, image, loadPhotos, resizeImage, scaleAmount, api, beacon, store, fmtTime, parseTime, esc, qs, uid, toast, loadYouTube, indexAt, ready, lineLogin, auth, tagsHtml, parseTags, LIFF_ID };
 })();

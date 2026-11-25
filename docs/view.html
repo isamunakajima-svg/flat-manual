@@ -24,6 +24,7 @@
   </div>
 
   <div id="metaLine" style="margin:0 0 8px"></div>
+  <div id="videoArea">
   <div class="player-wrap"><div id="player"></div></div>
   <div class="progress" style="margin-top:8px"><div id="bar"></div></div>
   <p class="muted" id="watchInfo" style="margin:4px 0 0">見た割合 0%</p>
@@ -36,9 +37,24 @@
     <label class="field"><span>どこがおかしいですか？</span><textarea id="reportNote"></textarea></label>
     <div class="row"><button class="primary" id="reportSend">送る</button><button id="reportCancel">やめる</button></div>
   </div>
+  </div>
+
+  <!-- 写真・レシピのとき -->
+  <div id="recipeArea" class="hidden">
+    <img id="recipeCover" class="recipe-cover hidden" alt="">
+    <div class="card" id="ingrCard" style="margin-top:14px">
+      <h2>材料</h2>
+      <div class="yield-row hidden" id="yieldRow">
+        <input type="text" inputmode="decimal" id="yieldInput"><span id="yieldUnit"></span>
+        <span class="muted" style="font-size:13px" id="yieldNote"></span>
+      </div>
+      <table class="ingr" id="ingrTable"></table>
+    </div>
+  </div>
 
   <h2 style="font-size:16px;margin:18px 0 8px">手順</h2>
   <ol class="steps" id="steps"></ol>
+  <div class="card hidden" id="bodyCard" style="margin-top:14px"><h2>補足</h2><div class="body-text" id="bodyText"></div></div>
 
   <div class="card" id="quizCard" style="margin-top:18px">
     <h2>確認テスト</h2>
@@ -133,14 +149,18 @@
   // 手順
   const stepsEl = document.getElementById('steps');
   function renderSteps() {
+    const isRecipe = manual.type === 'recipe';
+    stepsEl.classList.toggle('recipe', isRecipe);
     stepsEl.innerHTML = manual.steps.map((s, i) => `
       <li data-i="${i}">
         <div class="num">${i + 1}</div>
         <div class="grow">
-          <div class="t">${FM.esc(pick(s.title))}<span class="time">${FM.fmtTime(s.start)}</span></div>
+          <div class="t">${FM.esc(pick(s.title))}${isRecipe ? '' : `<span class="time">${FM.fmtTime(s.start)}</span>`}</div>
           <div class="d">${FM.esc(pick(s.desc))}</div>
+          ${isRecipe && s.image ? `<img class="step-photo" data-photo="${FM.esc(s.image)}" alt="">` : ''}
         </div>
       </li>`).join('');
+    if (isRecipe) FM.loadPhotos(stepsEl);
     highlight(lastStep, false);
   }
   stepsEl.addEventListener('click', e => {
@@ -194,6 +214,7 @@
     btn.disabled = true;
     btn.textContent = '記録しています…';
     track.confirmed = true;
+    if (manual.type === 'recipe') track.completed = true;
     if (player && player.pauseVideo) player.pauseVideo();
     try {
       await FM.api('log', Object.assign({ sessionId, manualId: id, staff }, track, { quizScore, quizTotal }));
@@ -227,6 +248,46 @@
       reportBox.classList.add('hidden');
     } catch (e) { FM.toast(e.message, true); }
   };
+
+  // 写真・レシピ
+  if (manual.type === 'recipe') {
+    document.getElementById('videoArea').classList.add('hidden');
+    document.getElementById('recipeArea').classList.remove('hidden');
+    if (manual.cover) {
+      const c = document.getElementById('recipeCover');
+      c.setAttribute('data-photo', manual.cover); c.classList.remove('hidden'); FM.loadPhotos(c.parentNode);
+    }
+    const baseQty = Number(manual.yieldQty) || 0;
+    const ingrTable = document.getElementById('ingrTable');
+    const renderIngr = ratio => {
+      let lastGroup = null;
+      ingrTable.innerHTML = manual.ingredients.map(g => {
+        let head = '';
+        if (g.group && g.group !== lastGroup) head = `<tr class="grp"><td colspan="3">${FM.esc(g.group)}</td></tr>`;
+        lastGroup = g.group;
+        return head + `<tr><td>${FM.esc(g.name)}${g.note ? `<div class="note">${FM.esc(g.note)}</div>` : ''}</td>
+          <td class="amt">${FM.esc(FM.scaleAmount(g.amount, ratio))}</td><td>${FM.esc(g.unit)}</td></tr>`;
+      }).join('');
+    };
+    if (!manual.ingredients.length) document.getElementById('ingrCard').classList.add('hidden');
+    renderIngr(1);
+    if (baseQty) {
+      document.getElementById('yieldRow').classList.remove('hidden');
+      const inp = document.getElementById('yieldInput');
+      inp.value = manual.yieldQty;
+      document.getElementById('yieldUnit').textContent = manual.yieldUnit;
+      document.getElementById('yieldNote').textContent = '数を変えると分量も変わります';
+      inp.addEventListener('input', () => { const v = Number(inp.value); renderIngr(v > 0 ? v / baseQty : 1); });
+    }
+    if (manual.body) {
+      document.getElementById('bodyText').textContent = manual.body;
+      document.getElementById('bodyCard').classList.remove('hidden');
+    }
+    // レシピは「確認しました」で完了扱い
+    window.addEventListener('pagehide', () => logNow(true));
+    logNow();
+    return;
+  }
 
   // 動画
   if (!manual.youtubeId) {

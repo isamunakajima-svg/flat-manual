@@ -26,15 +26,35 @@
     <!-- 新規作成 -->
     <div class="card">
       <h2>新しいマニュアルを作る</h2>
+      <div class="type-tabs">
+        <button class="on" data-type="video">🎬 動画</button>
+        <button data-type="recipe">📷 写真・レシピ</button>
+      </div>
       <label class="field"><span>タイトル（空ならAIが付けます）</span><input type="text" id="newTitle"></label>
+      <div class="video-only">
       <label class="field"><span>YouTubeのURL（あとからでもOK）</span><input type="url" id="newYt" placeholder="https://youtu.be/..."></label>
       <p class="muted" style="margin:-6px 0 12px;font-size:13px">YouTubeに上げていなければ空のままでOKです。動画は管理者のGoogleドライブに保存され、管理者がYouTubeに上げます。</p>
+      </div>
       <div class="filters" style="margin:0 0 12px">
         <label><span class="muted" style="font-size:14px">店舗</span><select id="newStore"></select></label>
         <label><span class="muted" style="font-size:14px">フォルダ（新しく作るなら入力）</span><input type="text" id="newFolder" list="folderList" placeholder="例：パン製造"></label>
       </div>
       <datalist id="folderList"></datalist>
       <label class="field"><span>タグ（空ならAIが付けます。あとで直せます）</span><input type="text" id="newTags" placeholder="例：#クロワッサン #成形"></label>
+      <!-- 写真・レシピ -->
+      <div class="recipe-only hidden">
+        <label class="field"><span>写真（何枚でも。1枚目が表紙になります）</span><input type="file" id="newPhotos" accept="image/*" multiple></label>
+        <div class="photo-pick" id="photoPreview"></div>
+        <label class="field" style="margin-top:12px"><span>レシピや説明（材料・分量・手順など。Talknoteの投稿をそのまま貼ってもOK）</span>
+          <textarea id="newRecipeMemo" style="min-height:160px" placeholder="例：&#10;クロワッサン生地 20個分&#10;強力粉 1000g&#10;バター 500g（折り込み用）&#10;…"></textarea>
+        </label>
+        <button class="primary" id="recipeAiBtn" style="width:100%">AIで下書きを作る</button>
+        <button id="recipePlainBtn" style="width:100%;margin-top:8px">AIを使わずに作る（写真とメモをそのまま下書きに）</button>
+        <div class="progress" style="margin-top:10px"><div id="recipeBar"></div></div>
+        <p class="muted" id="recipeMsg"></p>
+      </div>
+
+      <div class="video-only">
       <label class="field"><span>動画ファイル（YouTubeに上げたものと同じ動画）</span><input type="file" id="newVideo" accept="video/*"></label>
       <p class="muted" id="videoInfo"></p>
 
@@ -64,6 +84,7 @@
       <p class="muted" style="margin:6px 0 0">動画を送り終わるまでは画面を開いたままにしてください。送り終われば閉じても大丈夫です。</p>
       <div class="progress" style="margin-top:10px"><div id="genBar"></div></div>
       <p class="muted" id="genMsg"></p>
+      </div>
     </div>
 
     <!-- 一覧 -->
@@ -108,7 +129,7 @@
       list.sort((a, b) => (rank[a.status] ?? 5) - (rank[b.status] ?? 5));
       $('allList').innerHTML = list.length ? list.map(m => `
         <a class="item" href="edit.html?id=${encodeURIComponent(m.id)}">
-          ${m.youtubeId ? `<img class="thumb" src="https://i.ytimg.com/vi/${FM.esc(m.youtubeId)}/mqdefault.jpg" alt="">` : '<div class="thumb"></div>'}
+          ${FM.thumbHtml(m)}
           <div class="grow"><div><span class="chip-store">${FM.esc(m.store)}</span><strong>${FM.esc(m.title)}</strong></div>
             <div class="muted" style="font-size:13px">${m.folder ? '📁 ' + FM.esc(m.folder) : 'フォルダなし'}</div>
             ${m.note ? `<div class="muted" style="font-size:13px">${FM.esc(m.note)}</div>` : ''}</div>
@@ -245,6 +266,81 @@
   const stopRec = () => { if (recorder && recorder.state === 'recording') { recorder.stop(); $('voVideo').pause(); } };
   $('voStop').onclick = stopRec;
   $('voVideo').onended = stopRec;
+
+  // 動画／写真・レシピの切り替え
+  document.querySelectorAll('.type-tabs button').forEach(b => b.onclick = () => {
+    document.querySelectorAll('.type-tabs button').forEach(x => x.classList.toggle('on', x === b));
+    const recipe = b.dataset.type === 'recipe';
+    document.querySelectorAll('.video-only').forEach(el => el.classList.toggle('hidden', recipe));
+    document.querySelectorAll('.recipe-only').forEach(el => el.classList.toggle('hidden', !recipe));
+  });
+
+  // 写真を選んだら、縮めてプレビュー
+  let photos = []; // { full: dataURL, thumb: dataURL }
+  $('newPhotos').onchange = async () => {
+    const files = Array.from($('newPhotos').files || []);
+    photos = [];
+    $('photoPreview').innerHTML = '<span class="muted">写真を準備しています…</span>';
+    for (const f of files) {
+      try { photos.push({ full: await FM.resizeImage(f, 1600, 0.82), thumb: await FM.resizeImage(f, 200, 0.6) }); }
+      catch (e) { FM.toast(f.name + ' を読み込めませんでした', true); }
+    }
+    $('photoPreview').innerHTML = photos.map(p => `<img src="${p.thumb}" alt="">`).join('');
+  };
+
+  async function uploadPhotos(prog) {
+    const ids = [];
+    for (let i = 0; i < photos.length; i++) {
+      prog(i / Math.max(1, photos.length) * 0.8, `写真を送っています… ${i + 1}/${photos.length}`);
+      const r = await FMA.adminApi('uploadImage', { data: photos[i].full });
+      ids.push(r.id);
+    }
+    return ids;
+  }
+
+  function resetRecipeForm() {
+    ['newTitle', 'newTags', 'newRecipeMemo'].forEach(k => $(k).value = '');
+    $('newPhotos').value = ''; photos = []; $('photoPreview').innerHTML = '';
+  }
+
+  async function createRecipe(useAi) {
+    const memo = $('newRecipeMemo').value.trim();
+    if (!photos.length && !memo) { FM.toast('写真かメモのどちらかを入れてください', true); return; }
+    const btns = [$('recipeAiBtn'), $('recipePlainBtn')];
+    btns.forEach(b => b.disabled = true);
+    const prog = (p, msg) => { $('recipeBar').style.width = Math.round(p * 100) + '%'; $('recipeMsg').textContent = msg; };
+    try {
+      const ids = await uploadPhotos(prog);
+      const common = {
+        store: $('newStore').value, folder: $('newFolder').value.trim(), tags: $('newTags').value.trim(),
+        coverThumb: photos[0] ? photos[0].thumb : ''
+      };
+      if (useAi) {
+        prog(0.9, '受付しています…');
+        await FMA.adminApi('queueRecipe', Object.assign({ title: $('newTitle').value.trim(), memo, images: ids }, common));
+        prog(1, '受け付けました。AIが裏で下書きを作ります。できたらLINEでお知らせするので、この画面は閉じて大丈夫です。');
+        FM.toast('受け付けました。閉じて大丈夫です');
+        resetRecipeForm();
+        loadList();
+      } else {
+        prog(0.9, '下書きを作っています…');
+        const steps = ids.map((id, i) => ({ start: 0, image: id, title: { ja: '手順' + (i + 1) }, desc: { ja: '' } }));
+        const r = await FMA.adminApi('save', { manual: Object.assign({
+          type: 'recipe', title: $('newTitle').value.trim() || '新しいレシピ', status: 'draft',
+          body: memo, cover: ids[0] || '', tags: FM.parseTags(common.tags), steps, subs: [], quiz: [], ingredients: []
+        }, common, { tags: FM.parseTags(common.tags) }) });
+        prog(1, 'できました。編集画面を開きます');
+        location.href = 'edit.html?id=' + encodeURIComponent(r.id);
+      }
+    } catch (e) {
+      FM.toast(e.message, true);
+      $('recipeMsg').textContent = 'エラー：' + e.message;
+    } finally {
+      btns.forEach(b => b.disabled = false);
+    }
+  }
+  $('recipeAiBtn').onclick = () => createRecipe(true);
+  $('recipePlainBtn').onclick = () => createRecipe(false);
 
   // 下書きを作る
   $('genBtn').onclick = async () => {

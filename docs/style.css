@@ -177,3 +177,23 @@ td.part { background: #fff6e8 !important; }
 .is-editor .admin-only { display: none !important; }
 .editor-only { display: none; }
 .is-editor .editor-only { display: inline; }
+
+/* レシピ */
+.recipe-cover { width: 100%; border-radius: 12px; display: block; background: #eee; min-height: 120px; object-fit: cover; max-height: 60vh; }
+table.ingr { width: 100%; border-collapse: collapse; font-size: 15px; }
+table.ingr td { padding: 7px 4px; border-bottom: 1px solid var(--line); vertical-align: top; }
+table.ingr td.amt { text-align: right; white-space: nowrap; font-weight: 700; width: 1%; }
+table.ingr tr.grp td { font-weight: 700; color: var(--accent); border-bottom: 0; padding-top: 14px; }
+table.ingr td.note { color: var(--sub); font-size: 13px; }
+.steps li img.step-photo { width: 100%; border-radius: 10px; margin-top: 8px; background: #eee; min-height: 80px; }
+.steps.recipe li { cursor: default; }
+.yield-row { display: flex; align-items: center; gap: 8px; margin: 4px 0 10px; }
+.yield-row input { width: 90px; }
+.body-text { white-space: pre-wrap; }
+.thumb-icon { width: 96px; height: 54px; border-radius: 6px; background: #eee6dc; display: flex; align-items: center; justify-content: center; font-size: 22px; flex: none; }
+.photo-pick { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
+.photo-pick img { width: 72px; height: 72px; object-fit: cover; border-radius: 8px; }
+.type-tabs { display: flex; gap: 6px; margin-bottom: 12px; }
+.type-tabs button.on { background: var(--ink); color: #fff; border-color: var(--ink); }
+.ingr-edit { display: grid; grid-template-columns: 1fr 2fr 1fr 1fr auto; gap: 4px; margin-bottom: 4px; }
+.ingr-edit input { padding: 8px 6px; font-size: 14px; }
