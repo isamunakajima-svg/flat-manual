@@ -166,7 +166,10 @@ function doPost(e) {
     }
     return json_({ ok: false, error: 'unknown action: ' + action });
   } catch (err) {
-    return json_({ ok: false, error: String(err && err.message || err) });
+    // 原因を探しやすいように、エラーの場所（Code.gsの行番号）も付けて返す
+    const where = String(err && err.stack || '').split('\n').filter(l => /Code|コード|\.gs/.test(l)).slice(0, 3).map(l => l.trim()).join(' / ');
+    console.error('doPost ' + (req && req.action) + ': ' + (err && err.stack || err));
+    return json_({ ok: false, error: String(err && err.message || err) + (where ? '（' + where + '）' : '') });
   }
 }
 
