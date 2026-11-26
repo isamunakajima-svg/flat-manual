@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>投稿のしかた - FLAT マニュアル</title>
+<link rel="stylesheet" href="style.css">
+<style>
+  .toc a { display: block; padding: 8px 0; color: var(--accent); text-decoration: none; border-bottom: 1px solid var(--line); }
+  .toc a:last-child { border-bottom: 0; }
+  .card h2 { font-size: 17px; }
+  .card h3 { font-size: 15px; margin: 16px 0 6px; }
+  .card ol, .card ul { padding-left: 1.3em; margin: 6px 0; }
+  .card li { margin: 4px 0; }
+  .tip { background: var(--accent-soft); border-radius: 10px; padding: 10px 12px; margin: 10px 0; font-size: 15px; }
+  .warn { background: #f8eaea; border-radius: 10px; padding: 10px 12px; margin: 10px 0; font-size: 15px; }
+  .flow { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; font-size: 14px; margin: 8px 0; }
+  .flow span { background: #fff; border: 1px solid var(--line); border-radius: 99px; padding: 3px 10px; }
+  .flow b { color: var(--sub); font-weight: 400; }
+</style>
+</head>
+<body>
+<header class="bar">
+  <a href="admin.html">‹ 管理</a>
+  <h1>投稿のしかた</h1>
+</header>
+<main>
+  <div class="card">
+    <p style="margin-top:0">マニュアルを作る人（管理者・店舗責任者）向けの説明です。</p>
+    <div class="flow">
+      <span>撮る・写真を選ぶ</span><b>→</b><span>AIで下書き</span><b>→</b><span>直す</span><b>→</b><span>公開（責任者は申請）</span>
+    </div>
+    <div class="toc">
+      <a href="#video">🎬 動画のマニュアルを作る</a>
+      <a href="#recipe">📷 写真・レシピのマニュアルを作る</a>
+      <a href="#shoot">撮影のコツ</a>
+      <a href="#edit">下書きを直す</a>
+      <a href="#publish">公開するまでの流れ</a>
+      <a href="#folder">店舗・フォルダ・タグ</a>
+      <a href="#rules">気をつけること</a>
+      <a href="#trouble">困ったとき</a>
+    </div>
+  </div>
+
+  <div class="card" id="video">
+    <h2>🎬 動画のマニュアルを作る</h2>
+    <ol>
+      <li>スマホで作業を撮る（1本＝1つの作業、3分前後が目安）</li>
+      <li>管理画面の「新しいマニュアルを作る」で <b>「🎬 動画」</b> を選ぶ</li>
+      <li>タイトル（空ならAIが付けます）・店舗・フォルダ・タグを入れる</li>
+      <li>「動画ファイル」で撮った動画を選ぶ</li>
+      <li>「字幕の作り方」を選ぶ
+        <ul>
+          <li><b>話しながら撮った</b>：動画の声を字幕にします</li>
+          <li><b>無言で撮った</b>：映像と「作業メモ」から字幕を作ります。コツや温度・時間はメモに書いてください</li>
+          <li><b>アフレコ</b>：「録音しながら再生」を押し、動画を見ながら説明を吹き込みます</li>
+        </ul>
+      </li>
+      <li>「AIで下書きを作る」を押す</li>
+    </ol>
+    <div class="tip">動画を送り終わるまでは画面を開いたままにしてください。「受け付けました」と出たら閉じて大丈夫です。下書きができるとLINEでお知らせが届きます。</div>
+    <h3>YouTubeのURLについて</h3>
+    <ul>
+      <li>YouTubeに上げていなければ、URLは<b>空のままでOK</b>です。動画は管理者のGoogleドライブに保存され、管理者がYouTubeに上げます</li>
+      <li>自分で上げる場合は、「FLAT マニュアル」チャンネルに切り替えて、必ず <b>「限定公開」</b> にしてください</li>
+    </ul>
+  </div>
+
+  <div class="card" id="recipe">
+    <h2>📷 写真・レシピのマニュアルを作る</h2>
+    <p style="margin-top:0">レシピ・ドリンクの作り方・片付け・機械の分解など、写真と文章で伝えたいものはこちら。</p>
+    <ol>
+      <li>「新しいマニュアルを作る」で <b>「📷 写真・レシピ」</b> を選ぶ</li>
+      <li>写真を選ぶ（何枚でも。<b>1枚目が表紙</b>になります。作業の順番に選ぶとAIが手順に合わせやすいです）</li>
+      <li>メモ欄に、材料・分量・手順などを書く。<b>Talknoteの投稿をそのままコピーして貼り付けてもOK</b></li>
+      <li>どちらかを押す
+        <ul>
+          <li><b>AIで下書きを作る</b>：材料表・写真付きの手順・補足・タグ・確認テストをAIが作ります（できたらLINEでお知らせ）</li>
+          <li><b>AIを使わずに作る</b>：写真を手順に並べ、メモを補足に入れた下書きをすぐ作ります。あとは手で直します</li>
+        </ul>
+      </li>
+    </ol>
+    <div class="tip">分量は「1000」「1.5」のように<b>数字だけ</b>にしておくと、スタッフの画面で「できあがりの数」を変えたときに自動で計算し直されます。「適量」などの文字はそのまま表示されます。</div>
+  </div>
+
+  <div class="card" id="shoot">
+    <h2>撮影のコツ</h2>
+    <ul>
+      <li><b>横向き</b>で、<b>手元がよく見える</b>位置から撮る</li>
+      <li>1人で撮るときは、首掛けのスマホホルダーやクリップ式スタンドがあると両手が空きます</li>
+      <li>新人に教えている場面を、もう1人がそのまま撮るのもおすすめです</li>
+      <li>完璧に撮ろうとしなくて大丈夫。字幕や区切りはAIが手伝います</li>
+      <li>レシピの写真は、明るい場所で、材料や手元が分かるように撮る</li>
+    </ul>
+  </div>
+
+  <div class="card" id="edit">
+    <h2>下書きを直す</h2>
+    <p style="margin-top:0">管理画面の一覧か、LINEの「編集する」ボタンから開きます。</p>
+    <h3>動画のとき</h3>
+    <ul>
+      <li><b>手順</b>：動画を見ながら「今」ボタンで開始時間を合わせ、見出しと説明を直す</li>
+      <li><b>字幕</b>：行をタップして文字を直す。「今」で開始・終了の時間を合わせる</li>
+      <li><b>翻訳</b>：日本語を直してから「日本語から翻訳する」を押す</li>
+    </ul>
+    <h3>写真・レシピのとき</h3>
+    <ul>
+      <li><b>材料</b>：グループ（生地・折り込みなど）・材料・分量・単位・メモを直す</li>
+      <li><b>手順</b>：↑↓で並べ替え、写真を付ける・変える・外す、「表紙にする」</li>
+      <li><b>表紙と分量</b>：表紙の写真、できあがりの数（例：20 個分）、補足</li>
+    </ul>
+    <h3>共通</h3>
+    <ul>
+      <li><b>テスト</b>：大事なポイントを2〜3問。選択肢は1行に1つ</li>
+      <li><b>途中保存</b>は編集を続けるとき、<b>保存して戻る</b>は終わったとき</li>
+      <li>「表示を確認」で、スタッフからどう見えるか確かめられます</li>
+    </ul>
+  </div>
+
+  <div class="card" id="publish">
+    <h2>公開するまでの流れ</h2>
+    <h3>店舗責任者</h3>
+    <div class="flow"><span>下書きを直す</span><b>→</b><span>「公開を申請する」</span><b>→</b><span>管理者が確認</span><b>→</b><span>公開 or 差し戻し</span></div>
+    <ul>
+      <li>結果はLINEで届きます。差し戻されたら理由を見て直し、もう一度申請してください</li>
+      <li>公開中のマニュアルを直したときは、公開したまま管理者に通知が届きます</li>
+      <li>作成・編集できるのは、<b>自分の店舗と「共通」</b>のマニュアルだけです</li>
+    </ul>
+    <h3>管理者</h3>
+    <ul>
+      <li>申請が来るとLINEに「確認する」ボタン付きで届きます。編集画面の「確認して公開する」か、理由を書いて「差し戻す」</li>
+      <li>動画のマニュアルは、YouTubeのURLが入っていないと公開できません。ドライブにある動画は「ドライブの動画を開く」から保存してYouTubeに上げ、URLを入れて保存してください（ドライブの動画は自動でゴミ箱に移ります）</li>
+    </ul>
+  </div>
+
+  <div class="card" id="folder">
+    <h2>店舗・フォルダ・タグ</h2>
+    <ul>
+      <li><b>店舗</b>：その店だけの手順なら店舗名、どの店でも同じなら「共通」</li>
+      <li><b>フォルダ</b>：パン製造・片付け・清掃・機械・ドリンクなど。リストにないものは名前を入れれば新しく作れます。<b>似た名前のフォルダを増やさないよう</b>、まず今あるものから選んでください</li>
+      <li><b>タグ</b>：商品名・作業名・道具の名前など。<code>#クロワッサン #成形</code> のようにスペースで区切ります。スタッフはタグで検索できます</li>
+    </ul>
+  </div>
+
+  <div class="card" id="rules">
+    <h2>気をつけること</h2>
+    <div class="warn">AIの下書きには間違いが入ることがあります。<b>特に分量・温度・時間は必ず自分の目で確認</b>してから公開・申請してください。</div>
+    <ul>
+      <li>AIの下書き作りには、Googleの無料のAI（Gemini）を使っています。送った動画・写真・文章がGoogleの改善に使われることがあります</li>
+      <li>お客さんや他のスタッフの顔が大きく映る写真・動画は避けてください</li>
+      <li>同じ作業のマニュアルがすでにないか、スタッフの一覧で検索してから作ると重複を防げます</li>
+    </ul>
+  </div>
+
+  <div class="card" id="trouble">
+    <h2>困ったとき</h2>
+    <ul>
+      <li><b>画面がおかしい・ボタンがない</b>：再読み込み（パソコンは Ctrl+F5）を試してください</li>
+      <li><b>「回数上限」と出た</b>：AIの無料枠の上限です。少し時間をおいてから試してください</li>
+      <li><b>下書きのお知らせが来ない</b>：管理画面の一覧で「作成中」「エラー」になっていないか確認してください</li>
+      <li><b>エラーが出た</b>：エラーのメッセージが入るようにスクリーンショットを撮って、管理者に送ってください</li>
+    </ul>
+  </div>
+</main>
+</body>
+</html>
