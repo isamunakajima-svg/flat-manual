@@ -4,7 +4,19 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>FLAT マニュアル</title>
-<link rel="stylesheet" href="style.css">
+<script>
+// LINEの通知から開いたとき（?liff.state=/edit.html?id=…）は、ほかの処理より先に目的のページへ移る
+(function () {
+  try {
+    var st = new URLSearchParams(location.search).get('liff.state');
+    var m = st && st.match(/([a-z]+\.html(?:\?[^#]*)?)/);
+    if (m && m[1].indexOf('index.html') !== 0) {
+      location.replace(location.pathname.replace(/[^/]*$/, '') + m[1] + location.hash);
+    }
+  } catch (e) {}
+})();
+</script>
+<link rel="stylesheet" href="style.css?v=20261126">
 </head>
 <body>
 <header class="bar">
@@ -39,8 +51,8 @@
   <p class="muted" id="loading">読み込み中…</p>
 </main>
 
-<script src="config.js"></script>
-<script src="common.js"></script>
+<script src="config.js?v=20261126"></script>
+<script src="common.js?v=20261126"></script>
 <script>
 (async function () {
   const $ = id => document.getElementById(id);

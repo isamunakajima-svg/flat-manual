@@ -5,9 +5,10 @@
 (function () {
   try {
     const st = new URLSearchParams(location.search).get('liff.state');
-    if (st && /^\/?[a-z]+\.html/.test(st)) {
-      const base = location.pathname.replace(/[^/]*$/, '');
-      location.replace(base + st.replace(/^\//, '') + location.hash);
+    const m = st && st.match(/([a-z]+\.html(?:\?[^#]*)?)/);
+    const here = location.pathname.split('/').pop() || 'index.html';
+    if (m && m[1].split('?')[0] !== here) {
+      location.replace(location.pathname.replace(/[^/]*$/, '') + m[1] + location.hash);
     }
   } catch (e) {}
 })();
