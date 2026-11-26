@@ -40,7 +40,7 @@ const SHEETS = {
   ingredients: ['manualId', 'idx', 'grp', 'name', 'amount', 'unit', 'note'],
   subs: ['manualId', 'idx', 'start', 'end'].concat(LANGS.map(l => 'text_' + l)),
   quiz: ['manualId', 'idx', 'question', 'choices', 'answer'],
-  staff: ['name', 'active', 'lineUserId', 'lineName', 'approved', 'registeredAt', 'store', 'role', 'folderOrder'],
+  staff: ['name', 'active', 'lineUserId', 'lineName', 'approved', 'registeredAt', 'store', 'role', 'folderOrder', 'talknoteId'],
   logs: ['sessionId', 'ts', 'staff', 'manualId', 'watchedSec', 'duration', 'maxPos', 'completed', 'stepViews', 'quizScore', 'quizTotal', 'confirmed'],
   reports: ['ts', 'staff', 'manualId', 'subIdx', 'note', 'done'],
   stores: ['name'],
@@ -633,8 +633,13 @@ function register_(req) {
     const h = SHEETS.staff;
     sh.getRange(row._row, h.indexOf('lineUserId') + 1).setValue(who.userId);
     sh.getRange(row._row, h.indexOf('lineName') + 1).setValue(who.lineName);
-    sh.getRange(row._row, h.indexOf('approved') + 1).setValue(false);
     sh.getRange(row._row, h.indexOf('registeredAt') + 1).setValue(new Date().toISOString());
+    // Talknoteのメンバー一覧から入った名前は、承認なしでそのまま使える
+    if (row.talknoteId) {
+      sh.getRange(row._row, h.indexOf('approved') + 1).setValue(true);
+      return { status: 'ok', name: row.name };
+    }
+    sh.getRange(row._row, h.indexOf('approved') + 1).setValue(false);
     notifyApproval_(row.name, who.lineName);
     return { status: 'pending', name: row.name };
   });
@@ -675,6 +680,107 @@ function notifyAdmins_(text, richMessage, extraIds) {
     console.warn('LINE通知に失敗: ' + e);
     return false;
   }
+}
+
+/* ========== Talknoteのメンバーとstaffシートを合わせる ==========
+ * Claudeが毎日、Talknoteのメンバー一覧をドライブの「flat-manual_talknote」フォルダに
+ * talknote_members_YYYYMMDD-HHMM.json として置く。ここで1時間ごとに新しいファイルを見て反映する。
+ * 最初に1回だけ、エディタで setupTalknoteSync を選んで「実行」する。
+ */
+const TALKNOTE_FOLDER_NAME = 'flat-manual_talknote';
+
+function setupTalknoteSync() {
+  ScriptApp.getProjectTriggers().filter(t => t.getHandlerFunction() === 'syncTalknoteCheck').forEach(t => ScriptApp.deleteTrigger(t));
+  ScriptApp.newTrigger('syncTalknoteCheck').timeBased().everyHours(1).create();
+  talknoteFolder_();
+  const r = syncTalknoteCheck();
+  console.log('1時間ごとの自動チェックを登録しました。今回の結果: ' + JSON.stringify(r));
+}
+
+function talknoteFolder_() {
+  const it = DriveApp.getFoldersByName(TALKNOTE_FOLDER_NAME);
+  return it.hasNext() ? it.next() : DriveApp.createFolder(TALKNOTE_FOLDER_NAME);
+}
+
+function syncTalknoteCheck() {
+  const props = PropertiesService.getScriptProperties();
+  const folder = talknoteFolder_();
+  const files = [];
+  const it = folder.getFiles();
+  while (it.hasNext()) { const f = it.next(); if (/^talknote_members_.*\.json$/.test(f.getName())) files.push(f); }
+  files.sort((a, b) => b.getDateCreated() - a.getDateCreated());
+  const newest = files[0];
+  // 3日以上届いていなければ、1回だけ知らせる（毎日届くはず）
+  const age = newest ? (Date.now() - newest.getDateCreated().getTime()) / 86400000 : 999;
+  if (age > 3) {
+    if (!props.getProperty('TALKNOTE_STALE_ALERTED')) {
+      notifyAdmins_('【FLAT マニュアル】\nTalknoteのメンバー一覧が3日以上届いていません。ClaudeのスケジュールタスクやTalknoteのつながりを確かめてください。');
+      props.setProperty('TALKNOTE_STALE_ALERTED', '1');
+    }
+  } else props.deleteProperty('TALKNOTE_STALE_ALERTED');
+  if (!newest || props.getProperty('TALKNOTE_LAST_FILE') === newest.getId()) return { skipped: true };
+  let data;
+  try { data = JSON.parse(newest.getBlob().getDataAsString('UTF-8')); }
+  catch (e) { notifyAdmins_('【FLAT マニュアル】\nTalknoteのメンバー一覧のファイルが読めませんでした: ' + newest.getName()); props.setProperty('TALKNOTE_LAST_FILE', newest.getId()); return { error: 'parse' }; }
+  const result = withLock_(() => applyTalknoteMembers_(data.users || []));
+  props.setProperty('TALKNOTE_LAST_FILE', newest.getId());
+  files.slice(5).forEach(f => { try { f.setTrashed(true); } catch (e) {} }); // 古いものは5つだけ残す
+  const lines = ['【FLAT マニュアル】Talknoteと合わせました（' + (data.users || []).length + '人）'];
+  if (result.added.length) lines.push('追加 ' + result.added.length + '人：' + result.added.join('、'));
+  if (result.disabled.length) lines.push('無効にした ' + result.disabled.length + '人：' + result.disabled.join('、'));
+  if (result.revived.length) lines.push('有効に戻した ' + result.revived.length + '人：' + result.revived.join('、'));
+  if (result.held) lines.push('⚠ 一覧が急に少なかったので、無効にする処理は止めました。Talknote側を確かめてください。');
+  if (result.added.length || result.disabled.length || result.revived.length || result.held) notifyAdmins_(lines.join('\n').slice(0, 4900));
+  return result;
+}
+
+function normName_(s) { return String(s || '').replace(/[\s　]+/g, ''); }
+
+/** users: [{ user_id, name }]。Talknoteにいる人を追加し、いなくなった人を無効にする */
+function applyTalknoteMembers_(users) {
+  const sh = sheet_('staff');
+  const h = SHEETS.staff;
+  const col = k => h.indexOf(k) + 1;
+  const rows = staffRows_();
+  const ids = {};
+  users.forEach(u => { if (u && u.user_id && u.name) ids[String(u.user_id)] = String(u.name).trim(); });
+  const out = { added: [], disabled: [], revived: [], held: false };
+  const used = {};
+  // 1) Talknoteの番号で見つける。なければ名前（空白を除いて同じ）で見つけ、番号を書き込む
+  Object.keys(ids).forEach(id => {
+    let row = rows.find(r => String(r.talknoteId) === id);
+    if (!row) {
+      row = rows.find(r => !r.talknoteId && !used[r._row] && normName_(r.name) === normName_(ids[id]));
+      if (row) { sh.getRange(row._row, col('talknoteId')).setValue(id); row.talknoteId = id; }
+    }
+    if (row) {
+      used[row._row] = true;
+      return;
+    }
+    // 新しい人
+    const r = new Array(h.length).fill('');
+    r[h.indexOf('name')] = ids[id];
+    r[h.indexOf('active')] = true;
+    r[h.indexOf('talknoteId')] = id;
+    sh.appendRow(r);
+    out.added.push(ids[id]);
+  });
+  // 2) Talknoteにいなくなった人を無効に（Talknoteから入った人だけ。手で足した人はそのまま）
+  const gone = rows.filter(r => r.talknoteId && !ids[String(r.talknoteId)] && r.active === true);
+  const linkedActive = rows.filter(r => r.talknoteId && r.active === true).length;
+  if (gone.length && linkedActive && Object.keys(ids).length < linkedActive * 0.7) {
+    out.held = true;
+  } else {
+    gone.forEach(r => { sh.getRange(r._row, col('active')).setValue(false); out.disabled.push(String(r.name)); });
+  }
+  // 3) Talknoteで無効にした人が戻ってきたら、有効に戻す（管理画面で無効にした人は戻さない）
+  const syncOff = JSON.parse(PropertiesService.getScriptProperties().getProperty('TALKNOTE_DISABLED') || '[]');
+  const nowOff = syncOff.filter(id => !ids[id]).concat(out.held ? [] : gone.map(r => String(r.talknoteId)));
+  rows.filter(r => r.talknoteId && ids[String(r.talknoteId)] && r.active !== true && syncOff.indexOf(String(r.talknoteId)) >= 0)
+    .forEach(r => { sh.getRange(r._row, col('active')).setValue(true); out.revived.push(String(r.name)); });
+  PropertiesService.getScriptProperties().setProperty('TALKNOTE_DISABLED', JSON.stringify(Array.from(new Set(nowOff))));
+  staffMemo_ = null;
+  return out;
 }
 
 /** 通知の設定を確かめる用。エディタでこの関数を選んで「実行」すると、テストの通知が届く */

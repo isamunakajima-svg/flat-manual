@@ -205,9 +205,18 @@
       const opts = (me.candidates || []).map(n => `<option>${esc(n)}</option>`).join('');
       show(`<div class="card"><h2>はじめに、あなたの名前を選んでください</h2>
         <p class="muted">${me.lineName ? 'LINEの名前：' + esc(me.lineName) + '<br>' : ''}一度選ぶと、次からは自動で記録されます。</p>
+        ${(me.candidates || []).length > 8 ? '<input type="text" id="gateFind" placeholder="名字などで探す" style="margin-bottom:8px">' : ''}
         <select id="gateName"><option value="">選んでください</option>${opts}</select>
         <button class="primary" id="gateSend" style="width:100%;margin-top:10px">この名前で登録する</button>
         <p class="muted" style="margin-top:8px">自分の名前がないときは、管理者に伝えてください。</p></div>`);
+      const find = document.getElementById('gateFind');
+      if (find) find.oninput = () => {
+        const w = find.value.replace(/[\s　]+/g, '');
+        const list = (me.candidates || []).filter(n => !w || n.replace(/[\s　]+/g, '').indexOf(w) >= 0);
+        document.getElementById('gateName').innerHTML = '<option value="">' + (list.length ? '選んでください（' + list.length + '人）' : '見つかりません') + '</option>' +
+          list.map(n => `<option>${esc(n)}</option>`).join('');
+        if (list.length === 1) document.getElementById('gateName').value = list[0];
+      };
       document.getElementById('gateSend').onclick = async () => {
         const name = document.getElementById('gateName').value;
         if (!name) { toast('名前を選んでください', true); return; }
