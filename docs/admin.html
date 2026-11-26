@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>管理 - FLAT マニュアル</title>
-<link rel="stylesheet" href="style.css?v=20261126b">
+<link rel="stylesheet" href="style.css?v=20261126c">
 </head>
 <body>
 <header class="bar">
@@ -24,6 +24,14 @@
   </div>
 
   <div id="adminMain" class="hidden">
+    <nav class="tabbar" id="adminTabs">
+      <button data-tab="new">＋ 新規作成</button>
+      <button data-tab="list">マニュアル一覧<span class="n" id="nList"></span></button>
+      <button data-tab="review">申請中<span class="n" id="nReview"></span></button>
+      <button data-tab="staff" class="admin-only">スタッフ<span class="n" id="nStaff"></span></button>
+    </nav>
+
+    <section data-pane="new" class="hidden">
     <!-- 新規作成 -->
     <div class="card">
       <h2>新しいマニュアルを作る <a href="help.html" style="font-size:13px;font-weight:400;color:var(--accent);margin-left:6px">投稿のしかた</a></h2>
@@ -112,13 +120,34 @@
       </div>
     </div>
 
+    </section>
+
     <!-- 一覧 -->
-    <div class="card">
-      <h2>マニュアル一覧</h2>
+    <section data-pane="list" class="hidden">
+      <div class="card" style="padding:10px">
+        <input type="text" id="aq" placeholder="検索（タイトル・#タグ・フォルダ）">
+        <div class="filters">
+          <select id="aStatus">
+            <option value="">すべての状態</option>
+            <option value="published">公開中</option>
+            <option value="draft">下書き</option>
+            <option value="processing">作成中</option>
+            <option value="error">エラー</option>
+          </select>
+          <select id="aFolder"><option value="">すべてのフォルダ</option></select>
+        </div>
+      </div>
       <div id="allList" class="list"><p class="muted">読み込み中…</p></div>
-    </div>
+    </section>
+
+    <!-- 申請中 -->
+    <section data-pane="review" class="hidden">
+      <p class="muted" style="margin:0 0 8px" id="reviewNote">公開の申請が来ているマニュアルです。開いて中身を確かめ、「確認して公開する」か「差し戻す」を押してください。</p>
+      <div id="reviewList" class="list"><p class="muted">読み込み中…</p></div>
+    </section>
 
     <!-- スタッフ（管理者だけ） -->
+    <section data-pane="staff" class="hidden">
     <div class="card admin-only">
       <h2>スタッフ <span class="badge hidden" id="pendingBadge"></span></h2>
       <p class="muted" style="margin-top:0">LINEで開いて名前を選んだ人は「承認待ち」になります。承認すると見られるようになります。辞めた人は「無効にする」で見られなくなります（記録は残ります）。</p>
@@ -128,48 +157,93 @@
       </div>
       <div id="staffList"><p class="muted">読み込み中…</p></div>
     </div>
-
     <p class="muted admin-only"><button class="small" id="logoutBtn">この端末からパスワードを消す</button></p>
+    </section>
   </div>
 </main>
 
-<script src="config.js?v=20261126b"></script>
-<script src="common.js?v=20261126b"></script>
-<script src="admin.js?v=20261126b"></script>
+<script src="config.js?v=20261126c"></script>
+<script src="common.js?v=20261126c"></script>
+<script src="admin.js?v=20261126c"></script>
 <script>
 (function () {
   const $ = id => document.getElementById(id);
 
-  async function loadList() {
-    try {
-      const list = await FMA.adminApi('listAll');
-      const badge = {
-        published: '<span class="badge">公開中</span>',
-        draft: '<span class="badge draft">下書き</span>',
-        processing: '<span class="badge" style="background:#fff6e8;color:#b5642d">作成中…</span>',
-        review: '<span class="badge" style="background:#e8f0fb;color:#2f5f9e">確認待ち</span>',
-        error: '<span class="badge" style="background:#f8eaea;color:#b33a3a">エラー</span>'
-      };
-      const rank = { review: 0, processing: 1, error: 2, draft: 3, published: 4 };
-      list.sort((a, b) => (rank[a.status] ?? 5) - (rank[b.status] ?? 5));
-      $('allList').innerHTML = list.length ? list.map(m => `
+  const badge = {
+    published: '<span class="badge">公開中</span>',
+    draft: '<span class="badge draft">下書き</span>',
+    processing: '<span class="badge" style="background:#fff6e8;color:#b5642d">作成中…</span>',
+    review: '<span class="badge" style="background:#e8f0fb;color:#2f5f9e">確認待ち</span>',
+    error: '<span class="badge" style="background:#f8eaea;color:#b33a3a">エラー</span>'
+  };
+  const itemHtml = m => `
         <a class="item" href="edit.html?id=${encodeURIComponent(m.id)}">
           ${FM.thumbHtml(m)}
           <div class="grow"><div><span class="chip-store">${FM.esc(m.store)}</span><strong>${FM.esc(m.title)}</strong></div>
-            <div class="muted" style="font-size:13px">${m.folder ? '📁 ' + FM.esc(m.folder) : 'フォルダなし'}</div>
+            <div class="muted" style="font-size:13px">${m.folder ? '📁 ' + FM.esc(m.folder) : 'フォルダなし'}${m.author ? '　✍ ' + FM.esc(m.author) : ''}</div>
             ${m.note ? `<div class="muted" style="font-size:13px">${FM.esc(m.note)}</div>` : ''}</div>
           ${badge[m.status] || badge.draft}
-        </a>`).join('') : '<p class="muted">まだありません</p>';
+        </a>`;
+  let all = [];
+  function renderLists() {
+    const reviews = all.filter(m => m.status === 'review');
+    $('nReview').textContent = reviews.length || '';
+    $('nReview').classList.toggle('alert', reviews.length > 0);
+    $('nList').textContent = all.length || '';
+    $('reviewList').innerHTML = reviews.length ? reviews.map(itemHtml).join('') : '<p class="muted">いま申請中のものはありません。</p>';
+    // 一覧：作成中・エラー・下書き・公開中の順（申請中も含める）
+    const words = $('aq').value.trim().toLowerCase().split(/\s+/).filter(w => w).map(w => w.replace(/^[#＃]/, ''));
+    const st = $('aStatus').value, ff = $('aFolder').value;
+    const rank = { review: 0, processing: 1, error: 2, draft: 3, published: 4 };
+    const hit = all.filter(m => {
+      if (st && m.status !== st) return false;
+      if (ff === '__none' ? !!m.folder : (ff && m.folder !== ff)) return false;
+      const hay = [m.title, m.folder, m.store, m.author].concat(m.tags || []).join(' ').toLowerCase();
+      return words.every(w => hay.indexOf(w) >= 0);
+    }).sort((a, b) => (rank[a.status] ?? 5) - (rank[b.status] ?? 5));
+    $('allList').innerHTML = !all.length ? '<p class="muted">まだありません</p>'
+      : hit.length ? hit.map(itemHtml).join('') : '<p class="muted">見つかりませんでした。</p>';
+  }
+  async function loadList() {
+    try {
+      all = await FMA.adminApi('listAll');
+      // フォルダの選択肢（使われているものだけ、決めた順に）
+      const used = Array.from(new Set(all.map(m => m.folder).filter(x => x)));
+      used.sort((a, b) => ((meta.folders.indexOf(a) + 1) || 999) - ((meta.folders.indexOf(b) + 1) || 999) || a.localeCompare(b, 'ja'));
+      const cur = $('aFolder').value;
+      $('aFolder').innerHTML = '<option value="">すべてのフォルダ</option>' + used.map(f => `<option>${FM.esc(f)}</option>`).join('') +
+        (all.some(m => !m.folder) ? '<option value="__none">フォルダなし</option>' : '');
+      $('aFolder').value = cur;
+      renderLists();
       // 作成中のものがあれば、しばらくして一覧を読み直す
       clearTimeout(window._listTimer);
-      if (list.some(m => m.status === 'processing')) window._listTimer = setTimeout(loadList, 20000);
+      if (all.some(m => m.status === 'processing')) window._listTimer = setTimeout(loadList, 20000);
     } catch (e) { $('allList').innerHTML = `<p class="muted">${FM.esc(e.message)}</p>`; }
   }
+  $('aq').addEventListener('input', renderLists);
+  $('aStatus').addEventListener('change', renderLists);
+  $('aFolder').addEventListener('change', renderLists);
+
+  // タブ
+  let isAdmin = false;
+  function showTab(t) {
+    if (t === 'staff' && !isAdmin) t = 'list';
+    if (!document.querySelector(`section[data-pane="${t}"]`)) t = 'list';
+    document.querySelectorAll('#adminTabs button').forEach(b => b.classList.toggle('on', b.dataset.tab === t));
+    document.querySelectorAll('section[data-pane]').forEach(p => p.classList.toggle('hidden', p.dataset.pane !== t));
+    FM.store.set('adminTab', t);
+    window.scrollTo(0, 0);
+  }
+  $('adminTabs').addEventListener('click', e => {
+    const b = e.target.closest('button[data-tab]'); if (b) showTab(b.dataset.tab);
+  });
 
   function renderStaff(list) {
     const pending = list.filter(s => s.active && s.linked && !s.approved).length;
     $('pendingBadge').textContent = '承認待ち ' + pending;
     $('pendingBadge').classList.toggle('hidden', !pending);
+    $('nStaff').textContent = pending || '';
+    $('nStaff').classList.toggle('alert', pending > 0);
     $('staffList').innerHTML = list.length ? list.map(s => {
       let status, btns = '';
       if (!s.active) { status = '<span class="badge draft">無効</span>'; btns = `<button class="small" data-op="enable">有効に戻す</button>`; }
@@ -271,6 +345,11 @@
   };
 
   FMA.requireLogin(async actor => {
+    isAdmin = actor.role === 'admin';
+    $('reviewNote').textContent = isAdmin
+      ? '公開の申請が来ているマニュアルです。開いて中身を確かめ、「確認して公開する」か「差し戻す」を押してください。'
+      : '公開を申請して、管理者の確認を待っているマニュアルです。';
+    showTab(FM.store.get('adminTab', 'list'));
     await loadMeta(actor);
     loadList();
     if (actor.role === 'admin') loadStaff();

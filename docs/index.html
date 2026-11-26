@@ -16,7 +16,7 @@
   } catch (e) {}
 })();
 </script>
-<link rel="stylesheet" href="style.css?v=20261126b">
+<link rel="stylesheet" href="style.css?v=20261126c">
 </head>
 <body>
 <header class="bar">
@@ -27,6 +27,8 @@
   <div id="gate" class="hidden"></div>
 
   <div id="content" class="hidden">
+    <!-- フォルダのタブ -->
+    <nav class="tabbar" id="folderTabs"></nav>
     <!-- ブラウザで名前を選ぶ方式のとき -->
     <div class="card hidden" id="pickCard">
       <label class="field" style="margin:0">
@@ -40,9 +42,8 @@
 
     <div class="card" style="padding:10px">
       <input type="text" id="q" placeholder="検索（タイトル・#タグ・フォルダ）">
-      <div class="filters">
+      <div class="filters" id="storeRow">
         <select id="fStore"><option value="">すべての店舗</option></select>
-        <select id="fFolder"><option value="">すべてのフォルダ</option></select>
       </div>
     </div>
 
@@ -51,8 +52,8 @@
   <p class="muted" id="loading">読み込み中…</p>
 </main>
 
-<script src="config.js?v=20261126b"></script>
-<script src="common.js?v=20261126b"></script>
+<script src="config.js?v=20261126c"></script>
+<script src="common.js?v=20261126c"></script>
 <script>
 (async function () {
   const $ = id => document.getElementById(id);
@@ -97,59 +98,87 @@
   const stores = order(used('store'), meta.stores);
   const folders = order(used('folder'), meta.folders);
   $('fStore').innerHTML += stores.map(s => `<option>${FM.esc(s)}</option>`).join('');
-  $('fFolder').innerHTML += folders.map(f => `<option>${FM.esc(f)}</option>`).join('') + (list.some(m => !m.folder) ? '<option value="__none">フォルダなし</option>' : '');
+  if (stores.length < 2) $('storeRow').classList.add('hidden');
+  // フォルダのタブ（'' = すべて、'__none' = フォルダなし）。前回選んだものを覚えておく
+  let curFolder = FM.store.get('fFolder', '');
+  if (curFolder && curFolder !== '__none' && folders.indexOf(curFolder) < 0) curFolder = '';
   $('fStore').value = FM.store.get('fStore', '');
   if ($('fStore').value !== FM.store.get('fStore', '')) $('fStore').value = '';
 
   function render() {
     const q = $('q').value.trim().toLowerCase();
     const words = q.split(/\s+/).filter(w => w).map(w => w.replace(/^[#＃]/, ''));
-    const fs = $('fStore').value, ff = $('fFolder').value;
-    const hit = list.filter(m => {
+    const fs = $('fStore').value;
+    // 店舗と検索で絞ったもの（タブの件数はこれで数える）
+    const base = list.filter(m => {
       if (fs && m.store !== fs) return false;
-      if (ff === '__none' ? !!m.folder : (ff && m.folder !== ff)) return false;
       const hay = [m.title, m.folder, m.store].concat(m.tags || []).join(' ').toLowerCase();
       return words.every(w => hay.indexOf(w) >= 0);
     });
-    if (!list.length) { $('list').innerHTML = '<p class="muted">公開中のマニュアルはまだありません。</p>'; return; }
-    if (!hit.length) { $('list').innerHTML = '<p class="muted">見つかりませんでした。</p>'; return; }
+    const count = f => base.filter(m => f === '' ? true : f === '__none' ? !m.folder : m.folder === f).length;
+    const tabs = [['', 'すべて']].concat(folders.map(f => [f, f]));
+    if (list.some(m => !m.folder)) tabs.push(['__none', 'フォルダなし']);
+    $('folderTabs').innerHTML = tabs.map(([v, l]) =>
+      `<button data-folder="${FM.esc(v)}" class="${v === curFolder ? 'on' : ''}">${FM.esc(l)}<span class="n">${count(v)}</span></button>`).join('');
 
-    // フォルダごとにまとめる
-    const groups = {};
-    hit.forEach(m => { const k = m.folder || 'フォルダなし'; (groups[k] = groups[k] || []).push(m); });
-    const keys = order(Object.keys(groups), meta.folders.concat(['フォルダなし']));
-    $('list').innerHTML = keys.map(k => `
-      <div class="folder-head">📁 ${FM.esc(k)} <span class="count">${groups[k].length}</span></div>
-      ${groups[k].map(m => `
+    if (!list.length) { $('list').innerHTML = '<p class="muted">公開中のマニュアルはまだありません。</p>'; return; }
+    const hit = base.filter(m => curFolder === '' ? true : curFolder === '__none' ? !m.folder : m.folder === curFolder);
+    if (!hit.length) {
+      $('list').innerHTML = base.length && curFolder
+        ? `<p class="muted">このフォルダには見つかりませんでした。<a href="#" id="toAll">すべて（${base.length}件）を見る</a></p>`
+        : '<p class="muted">見つかりませんでした。</p>';
+      return;
+    }
+    const card = m => `
         <a class="item" href="view.html?id=${encodeURIComponent(m.id)}">
           ${FM.thumbHtml(m)}
           <div class="grow">
             <div><span class="chip-store">${FM.esc(m.store)}</span><strong>${FM.esc(m.title)}</strong></div>
             <div>${FM.tagsHtml(m.tags)}</div>
           </div>
-        </a>`).join('')}`).join('');
+        </a>`;
+    if (curFolder) { $('list').innerHTML = hit.map(card).join(''); return; }
+    // 「すべて」のときはフォルダごとにまとめる
+    const groups = {};
+    hit.forEach(m => { const k = m.folder || 'フォルダなし'; (groups[k] = groups[k] || []).push(m); });
+    const keys = order(Object.keys(groups), meta.folders.concat(['フォルダなし']));
+    $('list').innerHTML = keys.map(k => `
+      <div class="folder-head">📁 ${FM.esc(k)} <span class="count">${groups[k].length}</span></div>
+      ${groups[k].map(card).join('')}`).join('');
   }
+
+  function setFolder(f) {
+    curFolder = f; FM.store.set('fFolder', f); render();
+    const on = $('folderTabs').querySelector('button.on');
+    if (on) on.scrollIntoView({ inline: 'center', block: 'nearest' });
+  }
+  $('folderTabs').addEventListener('click', e => {
+    const b = e.target.closest('button[data-folder]'); if (b) setFolder(b.dataset.folder);
+  });
 
   // タグから来たとき（#%23タグ）だけ検索欄に入れる。LINEが付ける #context_token=… などは無視する
   if (location.hash.length > 1) {
     try {
       const h = decodeURIComponent(location.hash.slice(1));
-      if (/^[#＃]/.test(h) && h.indexOf('=') < 0) $('q').value = h;
+      if (/^[#＃]/.test(h) && h.indexOf('=') < 0) { $('q').value = h; curFolder = ''; }
     } catch (e) {}
   }
   $('q').addEventListener('input', render);
   $('fStore').addEventListener('change', () => { FM.store.set('fStore', $('fStore').value); render(); });
-  $('fFolder').addEventListener('change', render);
   // タグを押すと、そのタグで検索
   $('list').addEventListener('click', e => {
+    if (e.target.id === 'toAll') { e.preventDefault(); setFolder(''); return; }
     const t = e.target.closest('.tag');
     if (!t) return;
     e.preventDefault();
     $('q').value = '#' + t.dataset.tag;
+    curFolder = ''; FM.store.set('fFolder', '');
     render();
     window.scrollTo({ top: 0, behavior: 'smooth' });
   });
   render();
+  const on0 = $('folderTabs').querySelector('button.on');
+  if (on0) on0.scrollIntoView({ inline: 'center', block: 'nearest' });
 })();
 </script>
 </body>

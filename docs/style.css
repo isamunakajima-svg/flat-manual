@@ -197,3 +197,17 @@ table.ingr td.note { color: var(--sub); font-size: 13px; }
 .type-tabs button.on { background: var(--ink); color: #fff; border-color: var(--ink); }
 .ingr-edit { display: grid; grid-template-columns: 1fr 2fr 1fr 1fr auto; gap: 4px; margin-bottom: 4px; }
 .ingr-edit input { padding: 8px 6px; font-size: 14px; }
+
+/* 上のタブ（管理画面・一覧） */
+.tabbar {
+  display: flex; gap: 6px; overflow-x: auto; -webkit-overflow-scrolling: touch; scrollbar-width: none;
+  position: sticky; top: 45px; z-index: 5; background: var(--bg);
+  margin: -14px -14px 12px; padding: 10px 14px;
+  border-bottom: 1px solid var(--line);
+}
+.tabbar::-webkit-scrollbar { display: none; }
+.tabbar button { flex: 0 0 auto; border-radius: 99px; padding: 8px 14px; font-size: 15px; white-space: nowrap; }
+.tabbar button.on { background: var(--ink); border-color: var(--ink); color: #fff; }
+.tabbar .n { margin-left: 5px; font-size: 13px; opacity: .65; }
+.tabbar .n:empty { display: none; }
+.tabbar .n.alert { opacity: 1; background: #d9534f; color: #fff; border-radius: 99px; padding: 1px 7px; }
