@@ -118,7 +118,13 @@
         </a>`).join('')}`).join('');
   }
 
-  if (location.hash.length > 1) { try { $('q').value = decodeURIComponent(location.hash.slice(1)); } catch (e) {} }
+  // タグから来たとき（#%23タグ）だけ検索欄に入れる。LINEが付ける #context_token=… などは無視する
+  if (location.hash.length > 1) {
+    try {
+      const h = decodeURIComponent(location.hash.slice(1));
+      if (/^[#＃]/.test(h) && h.indexOf('=') < 0) $('q').value = h;
+    } catch (e) {}
+  }
   $('q').addEventListener('input', render);
   $('fStore').addEventListener('change', () => { FM.store.set('fStore', $('fStore').value); render(); });
   $('fFolder').addEventListener('change', render);

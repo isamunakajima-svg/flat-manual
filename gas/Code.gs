@@ -58,6 +58,17 @@ function flatLang_(fields) {
 
 /* ========== 初期設定 ========== */
 
+/**
+ * 許可（権限）をまとめて出す。エディタでこの関数を選んで「実行」する。
+ * 足りない許可があれば承認の画面が出るので、すべてにチェックを入れて続行する。
+ */
+function authorize() {
+  ScriptApp.requireAllScopes(ScriptApp.AuthMode.FULL);
+  photoFolderId_();
+  driveFolderId_();
+  console.log('許可はすべてそろっています。写真とドライブのフォルダも準備できました。');
+}
+
 function setup() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   Object.keys(SHEETS).forEach(name => {
@@ -1011,6 +1022,22 @@ function scheduleJobs_(seconds) {
 
 /** タイマーから呼ばれる。待っている下書きを順に作る */
 function processJobs() {
+  const props = PropertiesService.getScriptProperties();
+  // 同時に2つ動かないようにする（動いている途中なら、少しあとにもう一度）
+  const running = Number(props.getProperty('JOBS_RUNNING') || 0);
+  if (running && Date.now() - running < 6 * 60 * 1000) {
+    scheduleJobs_(90);
+    return;
+  }
+  props.setProperty('JOBS_RUNNING', String(Date.now()));
+  try {
+    processJobsInner_();
+  } finally {
+    props.deleteProperty('JOBS_RUNNING');
+  }
+}
+
+function processJobsInner_() {
   ScriptApp.getProjectTriggers().filter(t => t.getHandlerFunction() === 'processJobs')
     .forEach(t => ScriptApp.deleteTrigger(t));
   const props = PropertiesService.getScriptProperties();
@@ -1071,7 +1098,8 @@ function processJobs() {
       notifyDone_(job.id, job.title || '（タイトルなし）', msg, job.notifyTo);
     }
   });
-  if (waiting) scheduleJobs_(60);
+  const remain = Object.keys(props.getProperties()).some(k => k.indexOf('job_') === 0);
+  if (waiting || remain) scheduleJobs_(60);
 }
 
 /* ========== 写真（レシピ用） ========== */

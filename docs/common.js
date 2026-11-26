@@ -1,4 +1,17 @@
 /* 共通の小さな道具 */
+
+// LINEの通知などから https://liff.line.me/…/edit.html?id=… を開くと、最初は一覧のページに
+// liff.state=/edit.html?id=… が付いて届く。管理パスワードのある端末でも目的のページに移るように、ここで先に移動する。
+(function () {
+  try {
+    const st = new URLSearchParams(location.search).get('liff.state');
+    if (st && /^\/?[a-z]+\.html/.test(st)) {
+      const base = location.pathname.replace(/[^/]*$/, '');
+      location.replace(base + st.replace(/^\//, '') + location.hash);
+    }
+  } catch (e) {}
+})();
+
 (function () {
   const GAS_URL = (window.FLAT_MANUAL_CONFIG || {}).GAS_URL;
 
