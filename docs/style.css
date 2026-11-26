@@ -217,3 +217,7 @@ table.ingr td.note { color: var(--sub); font-size: 13px; }
 /* 動かしているタブ */
 .tabbar button.dragging { position: relative; box-shadow: 0 4px 14px rgba(0,0,0,.18); background: var(--accent); border-color: var(--accent); color: #fff; z-index: 2; }
 .tabbar.sorting button { will-change: transform; }
+/* スタッフの店舗チェック（3つまで） */
+.store-checks { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.store-checks .chk { display: inline-flex; align-items: center; gap: 4px; font-size: 14px; border: 1px solid var(--line); border-radius: 99px; padding: 4px 10px; background: #fff; }
+.store-checks .chk input { width: auto; margin: 0; }

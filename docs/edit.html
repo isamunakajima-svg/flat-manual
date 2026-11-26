@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>編集 - FLAT マニュアル</title>
-<link rel="stylesheet" href="style.css?v=20261126f">
+<link rel="stylesheet" href="style.css?v=20261126g">
 </head>
 <body>
 <header class="bar">
@@ -126,9 +126,9 @@
   </div>
 </main>
 
-<script src="config.js?v=20261126f"></script>
-<script src="common.js?v=20261126f"></script>
-<script src="admin.js?v=20261126f"></script>
+<script src="config.js?v=20261126g"></script>
+<script src="common.js?v=20261126g"></script>
+<script src="admin.js?v=20261126g"></script>
 <script>
 (function () {
   const $ = id => document.getElementById(id);
@@ -151,7 +151,7 @@
     meta = Object.assign({ stores: [], folders: [] }, meta);
     m.store = m.store || '共通'; m.tags = m.tags || [];
     m.type = m.type || 'video'; m.ingredients = m.ingredients || [];
-    const stores = actor.role === 'admin' ? meta.stores : ['共通'].concat(actor.store ? [actor.store] : []);
+    const stores = actor.role === 'admin' ? meta.stores : ['共通'].concat(FM.storesOf(actor.store));
     if (stores.indexOf(m.store) < 0) stores.push(m.store);
     $('store').innerHTML = stores.map(x => `<option ${x === m.store ? 'selected' : ''}>${FM.esc(x)}</option>`).join('');
     $('folderList').innerHTML = meta.folders.map(f => `<option value="${FM.esc(f)}">`).join('');

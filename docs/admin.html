@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>管理 - FLAT マニュアル</title>
-<link rel="stylesheet" href="style.css?v=20261126f">
+<link rel="stylesheet" href="style.css?v=20261126g">
 </head>
 <body>
 <header class="bar">
@@ -162,9 +162,9 @@
   </div>
 </main>
 
-<script src="config.js?v=20261126f"></script>
-<script src="common.js?v=20261126f"></script>
-<script src="admin.js?v=20261126f"></script>
+<script src="config.js?v=20261126g"></script>
+<script src="common.js?v=20261126g"></script>
+<script src="admin.js?v=20261126g"></script>
 <script>
 (function () {
   const $ = id => document.getElementById(id);
@@ -252,15 +252,17 @@
       else { status = '<span class="badge draft">未登録</span>'; }
       if (s.active) btns += ` <button class="small danger" data-op="disable">無効にする</button>`;
       if (s.linked) btns += ` <button class="small" data-op="unlink">LINE連携を外す</button>`;
-      const storeOpts = ['<option value="">店舗なし</option>'].concat(meta.stores.filter(x => x !== '共通').map(x => `<option ${x === s.store ? 'selected' : ''}>${FM.esc(x)}</option>`)).join('');
+      const mine = FM.storesOf(s.store);
+      const storeChecks = meta.stores.filter(x => x !== '共通').map(x =>
+        `<label class="chk"><input type="checkbox" data-store="${FM.esc(x)}" ${mine.indexOf(x) >= 0 ? 'checked' : ''}>${FM.esc(x)}</label>`).join('');
       const roleOpts = [['', 'スタッフ'], ['editor', '店舗責任者'], ['admin', '管理者']].map(([v, l]) => `<option value="${v}" ${v === s.role ? 'selected' : ''}>${l}</option>`).join('');
       return `<div class="edit-row" data-name="${FM.esc(s.name)}">
         <div class="row"><strong class="grow">${FM.esc(s.name)}</strong>${status}</div>
         ${s.lineName ? `<div class="muted" style="font-size:13px">LINEの名前：${FM.esc(s.lineName)}</div>` : ''}
         <div class="filters" style="margin-top:6px">
-          <select data-set="store">${storeOpts}</select>
           <select data-set="role">${roleOpts}</select>
         </div>
+        <div class="store-checks" title="店舗（3つまで）">${storeChecks}</div>
         <div class="row" style="margin-top:6px">${btns}</div>
       </div>`;
     }).join('') : '<p class="muted">まだいません</p>';
@@ -280,6 +282,16 @@
     catch (err) { FM.toast(err.message, true); b.disabled = false; }
   });
   $('staffList').addEventListener('change', async e => {
+    // 店舗のチェック（3つまで）
+    const cb = e.target.closest('input[data-store]');
+    if (cb) {
+      const row = cb.closest('.edit-row');
+      const picked = Array.from(row.querySelectorAll('input[data-store]:checked')).map(x => x.dataset.store);
+      if (picked.length > 3) { cb.checked = false; FM.toast('店舗は3つまでです', true); return; }
+      try { renderStaff(await FMA.adminApi('staffUpdate', { name: row.dataset.name, op: 'set', store: picked.join(', ') })); FM.toast('更新しました'); }
+      catch (err) { FM.toast(err.message, true); loadStaff(); }
+      return;
+    }
     const sel = e.target.closest('select[data-set]'); if (!sel) return;
     const name = sel.closest('.edit-row').dataset.name;
     const params = { name, op: 'set' };
@@ -299,9 +311,9 @@
   async function loadMeta(actor) {
     try { meta = Object.assign({ stores: [], folders: [] }, await FMA.adminApi('meta')); } catch (e) {}
     if (!meta.stores.length) meta.stores = ['共通'];
-    const stores = actor.role === 'admin' ? meta.stores : ['共通'].concat(actor.store ? [actor.store] : []);
+    const stores = actor.role === 'admin' ? meta.stores : ['共通'].concat(FM.storesOf(actor.store));
     $('newStore').innerHTML = stores.map(x => `<option>${FM.esc(x)}</option>`).join('');
-    $('newStore').value = actor.role === 'admin' ? '共通' : (actor.store || '共通');
+    $('newStore').value = actor.role === 'admin' ? '共通' : (FM.storesOf(actor.store)[0] || '共通');
     $('folderList').innerHTML = meta.folders.map(f => `<option value="${FM.esc(f)}">`).join('');
   }
 

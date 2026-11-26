@@ -322,5 +322,12 @@
     return m.youtubeId ? `<img class="thumb" src="https://i.ytimg.com/vi/${esc(m.youtubeId)}/mqdefault.jpg" alt="">` : '<div class="thumb-icon">🎬</div>';
   }
 
-  window.FM = { batch, thumbHtml, image, loadPhotos, resizeImage, scaleAmount, api, beacon, store, fmtTime, parseTime, esc, qs, uid, toast, loadYouTube, indexAt, ready, lineLogin, auth, tagsHtml, parseTags, LIFF_ID };
+    // 店舗の欄（「馬場, 高円寺」最大3店舗）を配列に
+  function storesOf(v) {
+    const out = [];
+    String(v || '').split(/[,、，\/\s]+/).map(x => x.trim()).filter(x => x && x !== '共通').forEach(x => { if (out.indexOf(x) < 0) out.push(x); });
+    return out.slice(0, 3);
+  }
+
+  window.FM = { storesOf, batch, thumbHtml, image, loadPhotos, resizeImage, scaleAmount, api, beacon, store, fmtTime, parseTime, esc, qs, uid, toast, loadYouTube, indexAt, ready, lineLogin, auth, tagsHtml, parseTags, LIFF_ID };
 })();

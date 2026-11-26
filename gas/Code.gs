@@ -114,11 +114,7 @@ function staffDropdowns_(force) {
   }
   sh.getRange(2, roleCol, rows, 1).setDataValidation(
     SpreadsheetApp.newDataValidation().requireValueInList(['スタッフ', '店舗責任者', '管理者'], true).setAllowInvalid(false).build());
-  const storeOptions = stores.filter(x => x !== COMMON_STORE);
-  if (storeOptions.length) {
-    sh.getRange(2, h.indexOf('store') + 1, rows, 1).setDataValidation(
-      SpreadsheetApp.newDataValidation().requireValueInList(storeOptions, true).setAllowInvalid(true).build());
-  }
+  // 店舗の列は、シートで「複数選択」のプルダウンを設定して使う（ここでは上書きしない）
   props.setProperty('STAFF_DROPDOWN_SIG', sig);
 }
 
@@ -298,8 +294,38 @@ function normStore_(s) {
 function canManage_(actor, store) {
   if (actor.role === 'admin') return true;
   store = normStore_(store);
-  return store === COMMON_STORE || (!!actor.store && store === actor.store);
+  return store === COMMON_STORE || storesOf_(actor.store).indexOf(store) >= 0;
 }
+
+/** シートを手で編集したとき：staffシートの店舗が4つ以上なら、最初の3つに戻して知らせる */
+function onEdit(e) {
+  try {
+    const r = e && e.range;
+    if (!r || r.getSheet().getName() !== 'staff' || r.getRow() < 2) return;
+    const col = SHEETS.staff.indexOf('store') + 1;
+    if (col < r.getColumn() || col > r.getLastColumn()) return;
+    const cells = r.getSheet().getRange(r.getRow(), col, r.getNumRows(), 1);
+    const vals = cells.getValues();
+    let fixed = false;
+    vals.forEach(v => {
+      const all = String(v[0] || '').split(/[,、，]+/).map(x => x.trim()).filter(x => x && x !== COMMON_STORE);
+      if (all.length > 3 || String(v[0] || '').indexOf(COMMON_STORE) >= 0) { v[0] = all.slice(0, 3).join(', '); fixed = true; }
+    });
+    if (fixed) {
+      cells.setValues(vals);
+      SpreadsheetApp.getActive().toast('店舗は3つまでです（「共通」は選ばなくても含まれます）。最初の3つだけ残しました。', 'FLAT マニュアル', 6);
+    }
+  } catch (err) {}
+}
+
+/** 店舗の欄（「馬場, 高円寺」のように最大3店舗）を配列にする。「共通」は含めない */
+function storesOf_(v) {
+  const out = [];
+  String(v || '').split(/[,、，\/\s]+/).map(x => x.trim()).filter(x => x && x !== COMMON_STORE)
+    .forEach(x => { if (out.indexOf(x) < 0) out.push(x); });
+  return out.slice(0, 3);
+}
+function firstStore_(v) { return storesOf_(v)[0] || COMMON_STORE; }
 
 function requireAdmin_(actor) {
   if (actor.role !== 'admin') throw new Error('この操作は管理者だけができます');
@@ -593,7 +619,7 @@ function me_(req) {
   out.store = me.store || '';
   // 編集できる店舗：'*' は全部
   if (me.admin || me.role === 'admin' || (me.status === 'ok' && me.userId && notifyIds.indexOf(me.userId) >= 0)) out.editStores = ['*'];
-  else if (me.role === 'editor' && me.status === 'ok') out.editStores = [COMMON_STORE].concat(me.store ? [me.store] : []);
+  else if (me.role === 'editor' && me.status === 'ok') out.editStores = [COMMON_STORE].concat(storesOf_(me.store));
   else out.editStores = [];
   out.canEdit = out.editStores.length > 0;
   out.folderOrder = me.folderOrder || [];
@@ -817,7 +843,7 @@ function staffUpdate_(req) {
     else if (req.op === 'enable') set('active', true);
     else if (req.op === 'unlink') { set('lineUserId', ''); set('lineName', ''); set('approved', false); set('registeredAt', ''); }
     else if (req.op === 'set') {
-      if (req.store !== undefined) set('store', String(req.store || ''));
+      if (req.store !== undefined) set('store', storesOf_(req.store).join(', '));
       if (req.role !== undefined) {
         const role = normRole_(req.role);
         if (req.role && !role) throw new Error('不明な役割');
@@ -876,7 +902,7 @@ function progressReport_(actor) {
   actor = actor || { role: 'admin' };
   const manuals = listManuals_(true).filter(m => canManage_(actor, m.store));
   const staff = readAll_('staff').filter(s => s.name && s.active !== false)
-    .filter(s => actor.role === 'admin' || String(s.store || '') === actor.store).map(s => String(s.name));
+    .filter(s => actor.role === 'admin' || storesOf_(s.store).some(x => storesOf_(actor.store).indexOf(x) >= 0)).map(s => String(s.name));
   const cells = {};
   const manualIds = manuals.map(m => m.id);
   readAll_('logs').forEach(l => {
@@ -1747,7 +1773,7 @@ const ADMIN_ACTIONS = {
     const m = req.manual || {};
     if (m.id) requireManual_(a, m.id);
     if (m.store !== undefined && !canManage_(a, m.store)) throw new Error('その店舗には保存できません');
-    if (!m.id && m.store === undefined && a.role !== 'admin') m.store = a.store || COMMON_STORE;
+    if (!m.id && m.store === undefined && a.role !== 'admin') m.store = firstStore_(a.store);
     m._by = a.name;
     const cur = m.id ? readAll_('manuals').find(r => String(r.id) === String(m.id)) : null;
     if (a.role !== 'admin') {
@@ -1768,7 +1794,7 @@ const ADMIN_ACTIONS = {
   sheetList: (req, a) => { requireAdmin_(a); return sheetList_(req); },
   importSheets: (req, a) => { requireAdmin_(a); return importSheets_(req, a); },
   queueRecipe: (req, a) => {
-    if (req.store === undefined || req.store === '') req.store = a.role === 'admin' ? COMMON_STORE : (a.store || COMMON_STORE);
+    if (req.store === undefined || req.store === '') req.store = a.role === 'admin' ? COMMON_STORE : firstStore_(a.store);
     if (!canManage_(a, req.store)) throw new Error('その店舗には投稿できません');
     req._by = a.name;
     req._notifyTo = a.userId || '';
@@ -1785,7 +1811,7 @@ const ADMIN_ACTIONS = {
     return generateDraft_(req);
   },
   queue: (req, a) => {
-    if (req.store === undefined || req.store === '') req.store = a.role === 'admin' ? COMMON_STORE : (a.store || COMMON_STORE);
+    if (req.store === undefined || req.store === '') req.store = a.role === 'admin' ? COMMON_STORE : firstStore_(a.store);
     if (!canManage_(a, req.store)) throw new Error('その店舗には投稿できません');
     req._by = a.name;
     req._notifyTo = a.userId || '';
