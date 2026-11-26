@@ -980,6 +980,11 @@ function processJobs() {
     if (Date.now() - started > 4 * 60 * 1000) { waiting = true; return; } // 時間切れ前に次回へ回す
     const job = JSON.parse(all[key]);
     try {
+      if (job.kind === 'sheetimport') {
+        const finished = runSheetImport_(job, started);
+        if (finished) props.deleteProperty(key); else waiting = true;
+        return;
+      }
       if (job.kind === 'recipe') {
         generateRecipe_(job);
         props.deleteProperty(key);
@@ -1017,6 +1022,10 @@ function processJobs() {
         return;
       }
       props.deleteProperty(key);
+      if (job.kind === 'sheetimport') {
+        pushButton_('【FLAT マニュアル】スプレッドシートの取り込みに失敗しました。\n' + msg.slice(0, 120), '管理画面を開く', ADMIN_PAGE_URL, job.notifyTo ? [job.notifyTo] : null, false);
+        return;
+      }
       saveManual_({ id: job.id, status: 'error', note: msg.slice(0, 300) });
       notifyDone_(job.id, job.title || '（タイトルなし）', msg, job.notifyTo);
     }
@@ -1093,6 +1102,7 @@ const RECIPE_PROMPT = [
   '- 材料や分量が無い作業（片付け・機械の分解など）は ingredients を空配列、yieldQty は null にする。',
   '- steps は 3〜12 個。photo はその手順に合う写真の番号、合うものが無ければ null。',
   '- tags は 3〜5 個。quiz は大事なポイントについて 1〜3 問。answer は正解の番号（0始まり）。',
+  '- 写真に文字（説明・サイズ・分量など）が書き込まれている場合は、その文字も手順や材料の情報として必ず使う。',
 ].join('\n');
 
 function queueRecipe_(req) {
@@ -1112,10 +1122,19 @@ function queueRecipe_(req) {
 function generateRecipe_(job) {
   const row = readAll_('manuals').find(r => String(r.id) === String(job.id)) || {};
   const parts = [];
+  let inlineBytes = 0;
   job.images.forEach(fid => {
     try {
       const blob = DriveApp.getFileById(fid).getBlob();
-      parts.push({ inlineData: { mimeType: blob.getContentType(), data: Utilities.base64Encode(blob.getBytes()) } });
+      const size = blob.getBytes().length;
+      if (inlineBytes + size > 12 * 1024 * 1024) {
+        // 大きい写真が多いときは、Geminiのファイル置き場を使う（1回のリクエストの上限を超えないように）
+        const f = geminiUploadBlob_(blob);
+        parts.push({ fileData: { mimeType: f.mimeType, fileUri: f.uri } });
+      } else {
+        inlineBytes += size;
+        parts.push({ inlineData: { mimeType: blob.getContentType(), data: Utilities.base64Encode(blob.getBytes()) } });
+      }
     } catch (e) { parts.push({ text: '（写真を読み込めませんでした）' }); }
   });
   parts.push({ text: RECIPE_PROMPT.replace('{{MEMO}}', String(row.memo || '（メモなし）')) });
@@ -1144,6 +1163,206 @@ function generateRecipe_(job) {
     steps: steps,
     quiz: (out.quiz || []).map(q => ({ question: q.question || '', choices: (q.choices || []).map(String), answer: Number(q.answer) || 0 }))
   });
+}
+
+/** 小さめのファイルを1回でGeminiに送る（画像なら読み込み待ちはほぼ無い） */
+function geminiUploadBlob_(blob) {
+  const bytes = blob.getBytes();
+  const st = uploadStart_({ size: bytes.length, mimeType: blob.getContentType(), name: blob.getName() || 'photo' });
+  const res = UrlFetchApp.fetch(st.uploadUrl, {
+    method: 'post', contentType: 'application/octet-stream',
+    headers: { 'X-Goog-Upload-Command': 'upload, finalize', 'X-Goog-Upload-Offset': '0' },
+    payload: bytes, muteHttpExceptions: true
+  });
+  if (res.getResponseCode() >= 300) throw new Error('写真をAIに送れませんでした');
+  const f = JSON.parse(res.getContentText()).file;
+  for (let i = 0; i < 10 && f.state && f.state !== 'ACTIVE'; i++) {
+    Utilities.sleep(2000);
+    const s2 = fileStatus_({ name: f.name }); f.state = s2.state; f.uri = s2.uri || f.uri;
+  }
+  return { uri: f.uri, mimeType: f.mimeType || blob.getContentType() };
+}
+
+/* ========== スプレッドシートから取り込む（1シート＝1品） ========== */
+
+function parseSpreadsheetId_(url) {
+  const m = String(url || '').match(/\/spreadsheets\/d\/([A-Za-z0-9_-]{20,})/) || String(url || '').match(/^([A-Za-z0-9_-]{25,})$/);
+  if (!m) throw new Error('スプレッドシートのURLが読み取れません');
+  return m[1];
+}
+
+/** 取り込めるシートの一覧（写真の枚数つき） */
+function sheetList_(req) {
+  const id = parseSpreadsheetId_(req.url);
+  let ss;
+  try { ss = SpreadsheetApp.openById(id); } catch (e) { throw new Error('スプレッドシートを開けません（共有されているか確認してください）'); }
+  return {
+    id: id, title: ss.getName(),
+    sheets: ss.getSheets().map(sh => {
+      let images = 0;
+      try { images = sh.getImages().length; } catch (e) {}
+      const text = sh.getLastRow() ? sh.getDataRange().getDisplayValues().some(r => r.some(c => String(c).trim())) : false;
+      return { name: sh.getName(), images: images, hasText: text };
+    })
+  };
+}
+
+function importSheets_(req, actor) {
+  const id = parseSpreadsheetId_(req.url);
+  const names = (req.sheets || []).map(String).filter(x => x);
+  if (!names.length) throw new Error('取り込むシートを選んでください');
+  const job = {
+    kind: 'sheetimport', id: 'imp' + Date.now(), ssId: id, sheets: names, done: [],
+    store: normStore_(req.store), folder: String(req.folder || '').trim(), tags: req.tags || '',
+    by: actor.name, notifyTo: actor.userId || '', queuedAt: Date.now(), tries: 0
+  };
+  PropertiesService.getScriptProperties().setProperty('job_' + job.id, JSON.stringify(job));
+  scheduleJobs_(5);
+  return { queued: names.length };
+}
+
+/* --- xlsx の中から、シートごとの写真を上から順に取り出す --- */
+
+function xmlAttr_(tag, name) {
+  const m = tag.match(new RegExp('\\s' + name + '="([^"]*)"'));
+  return m ? m[1] : '';
+}
+
+function xmlDecode_(s) {
+  return String(s).replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&amp;/g, '&');
+}
+
+function relsOf_(text) {
+  const out = {};
+  (String(text || '').match(/<Relationship\b[^>]*>/g) || []).forEach(t => { out[xmlAttr_(t, 'Id')] = xmlAttr_(t, 'Target'); });
+  return out;
+}
+
+function joinPath_(baseDir, target) {
+  if (target.charAt(0) === '/') return target.slice(1);
+  const parts = baseDir.split('/').filter(x => x);
+  target.split('/').forEach(p => { if (p === '..') parts.pop(); else if (p !== '.') parts.push(p); });
+  return parts.join('/');
+}
+
+function extractSheetImages_(ssId) {
+  const res = UrlFetchApp.fetch('https://docs.google.com/spreadsheets/d/' + ssId + '/export?format=xlsx', {
+    headers: { Authorization: 'Bearer ' + ScriptApp.getOAuthToken() }, muteHttpExceptions: true
+  });
+  if (res.getResponseCode() !== 200) throw new Error('スプレッドシートを書き出せませんでした（' + res.getResponseCode() + '）');
+  const blob = res.getBlob().setContentType('application/zip');
+  const files = {};
+  Utilities.unzip(blob).forEach(b => { files[b.getName()] = b; });
+  const txt = name => files[name] ? files[name].getDataAsString('UTF-8') : '';
+
+  const wbRels = relsOf_(txt('xl/_rels/workbook.xml.rels'));
+  const result = {};
+  (txt('xl/workbook.xml').match(/<sheet\b[^>]*>/g) || []).forEach(tag => {
+    const name = xmlDecode_(xmlAttr_(tag, 'name'));
+    const rid = xmlAttr_(tag, 'r:id');
+    const sheetPath = joinPath_('xl', wbRels[rid] || '');
+    const sheetDir = sheetPath.replace(/\/[^/]+$/, '');
+    const sheetRels = relsOf_(txt(sheetDir + '/_rels/' + sheetPath.split('/').pop() + '.rels'));
+    const items = [];
+    Object.keys(sheetRels).forEach(k => {
+      const target = sheetRels[k];
+      if (!/drawings\/drawing\d+\.xml$/.test(target)) return;
+      const drawPath = joinPath_(sheetDir, target);
+      const drawDir = drawPath.replace(/\/[^/]+$/, '');
+      const drawRels = relsOf_(txt(drawDir + '/_rels/' + drawPath.split('/').pop() + '.rels'));
+      const xml = txt(drawPath);
+      xml.split(/<(?:\w+:)?(?:twoCellAnchor|oneCellAnchor|absoluteAnchor)\b/).slice(1).forEach(part => {
+        const emb = part.match(/r:embed="([^"]+)"/);
+        if (!emb || !drawRels[emb[1]]) return;
+        const row = part.match(/<(?:\w+:)?row>(\d+)</);
+        const col = part.match(/<(?:\w+:)?col>(\d+)</);
+        const pos = part.match(/<(?:\w+:)?pos\b[^>]*\sy="(\d+)"/);
+        const r = row ? Number(row[1]) : (pos ? Number(pos[1]) / 190500 : 0);
+        const mediaPath = joinPath_(drawDir, drawRels[emb[1]]);
+        if (files[mediaPath]) items.push({ row: r, col: col ? Number(col[1]) : 0, blob: files[mediaPath] });
+      });
+    });
+    items.sort((a, b) => a.row - b.row || a.col - b.col);
+    result[name] = items.map(x => x.blob);
+  });
+  return result;
+}
+
+/** Driveの縮小画像を使って、写真を小さくして保存（だめなら元のまま） */
+function drivePreview_(fileId, width) {
+  const auth = { Authorization: 'Bearer ' + ScriptApp.getOAuthToken() };
+  const fetchImg = url => {
+    const r = UrlFetchApp.fetch(url, { headers: auth, muteHttpExceptions: true, followRedirects: true });
+    if (r.getResponseCode() !== 200) return null;
+    const b = r.getBlob();
+    return /^image\//.test(b.getContentType() || '') ? b : null;
+  };
+  // Drive が作る縮小画像（作られるまで少し待つことがある）
+  for (let i = 0; i < 3; i++) {
+    const meta = UrlFetchApp.fetch('https://www.googleapis.com/drive/v3/files/' + encodeURIComponent(fileId) + '?fields=thumbnailLink', { headers: auth, muteHttpExceptions: true });
+    if (meta.getResponseCode() === 200) {
+      const link = JSON.parse(meta.getContentText()).thumbnailLink;
+      if (link) {
+        const b = fetchImg(link.replace(/=s\d+$/, '') + '=s' + width);
+        if (b) return b;
+      }
+    }
+    Utilities.sleep(1500);
+  }
+  return fetchImg('https://drive.google.com/thumbnail?id=' + encodeURIComponent(fileId) + '&sz=w' + width);
+}
+
+function savePhotoBlob_(blob, baseName) {
+  const folder = DriveApp.getFolderById(photoFolderId_());
+  const type = blob.getContentType() || 'image/png';
+  const ext = type.indexOf('png') >= 0 ? 'png' : 'jpg';
+  const orig = folder.createFile(blob.setName(baseName + '.' + ext));
+  let id = orig.getId(), thumb = '';
+  try {
+    if (orig.getSize() > 600 * 1024) {
+      const small = drivePreview_(id, 1600);
+      if (small && small.getBytes().length < orig.getSize()) {
+        const f2 = folder.createFile(small.setName(baseName + '_s.jpg'));
+        orig.setTrashed(true);
+        id = f2.getId();
+      }
+    }
+  } catch (e) { console.warn('縮小に失敗: ' + e); }
+  return { id: id };
+}
+
+function coverThumbOf_(fileId) {
+  try {
+    const b = drivePreview_(fileId, 200);
+    if (!b) return '';
+    const data = 'data:' + b.getContentType() + ';base64,' + Utilities.base64Encode(b.getBytes());
+    return data.length < 45000 ? data : '';
+  } catch (e) { return ''; }
+}
+
+/** 取り込みの仕事を進める。時間切れになりそうなら途中で止めて次回に続ける */
+function runSheetImport_(job, started) {
+  const images = extractSheetImages_(job.ssId);
+  const ss = SpreadsheetApp.openById(job.ssId);
+  for (const name of job.sheets) {
+    if (job.done.indexOf(name) >= 0) continue;
+    if (Date.now() - started > 3.5 * 60 * 1000) return false;
+    const blobs = (images[name] || []).slice(0, 12);
+    const ids = blobs.map((b, i) => savePhotoBlob_(b, 'import_' + name + '_' + (i + 1)).id);
+    let text = '';
+    const sh = ss.getSheetByName(name);
+    if (sh && sh.getLastRow()) {
+      text = sh.getDataRange().getDisplayValues().map(r => r.filter(c => String(c).trim()).join(' ')).filter(l => l).join('\n').slice(0, 6000);
+    }
+    queueRecipe_({
+      title: name, memo: 'スプレッドシート「' + ss.getName() + '」のシート「' + name + '」から取り込み。写真は上から順番です。' + (text ? '\nセルの文字:\n' + text : ''),
+      images: ids, coverThumb: ids[0] ? coverThumbOf_(ids[0]) : '',
+      store: job.store, folder: job.folder, tags: job.tags, _by: job.by, _notifyTo: job.notifyTo
+    });
+    job.done.push(name);
+    PropertiesService.getScriptProperties().setProperty('job_' + job.id, JSON.stringify(job));
+  }
+  return true;
 }
 
 /* ========== 公開申請（店舗責任者 → 管理者） ========== */
@@ -1285,6 +1504,8 @@ const ADMIN_ACTIONS = {
     return saveManual_(m);
   },
   uploadImage: req => uploadImage_(req),
+  sheetList: (req, a) => { requireAdmin_(a); return sheetList_(req); },
+  importSheets: (req, a) => { requireAdmin_(a); return importSheets_(req, a); },
   queueRecipe: (req, a) => {
     if (req.store === undefined || req.store === '') req.store = a.role === 'admin' ? COMMON_STORE : (a.store || COMMON_STORE);
     if (!canManage_(a, req.store)) throw new Error('その店舗には投稿できません');
