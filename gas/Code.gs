@@ -809,6 +809,51 @@ function applyTalknoteMembers_(users) {
   return out;
 }
 
+/* ========== 公開前のテストデータの片付け（1回だけ使う） ==========
+ * まず previewCleanup を実行して、ログに出る「消すもの」を確かめる。
+ * よければ cleanupTestData を実行する。終わったらこの2つの関数は消してかまいません。
+ */
+const CLEANUP_MANUAL_IDS = [];                    // 消すマニュアルのID（犬の動画は残す）
+const CLEANUP_STAFF_NAMES = ['テスト太郎', 'テスト花子'];
+
+function previewCleanup() { console.log(JSON.stringify(cleanupPlan_(), null, 1)); }
+
+function cleanupTestData() {
+  const plan = cleanupPlan_();
+  plan.manuals.forEach(m => deleteManual_(m.id));
+  withLock_(() => {
+    const live = readAll_('manuals').map(r => String(r.id));
+    ['steps', 'subs', 'quiz', 'ingredients'].forEach(n => deleteRowsWhere_(n, r => live.indexOf(String(r.manualId)) < 0));
+    deleteRowsWhere_('staff', r => CLEANUP_STAFF_NAMES.indexOf(String(r.name)) >= 0 && !r.lineUserId);
+    deleteRowsWhere_('logs', () => true);
+    deleteRowsWhere_('reports', () => true);
+  });
+  console.log('片付けました: ' + JSON.stringify(plan));
+}
+
+function cleanupPlan_() {
+  const manuals = readAll_('manuals');
+  const keep = manuals.filter(m => CLEANUP_MANUAL_IDS.indexOf(String(m.id)) < 0).map(m => String(m.id));
+  const orphan = {};
+  ['steps', 'subs', 'quiz', 'ingredients'].forEach(n => {
+    const ids = readAll_(n).map(r => String(r.manualId)).filter(id => id && keep.indexOf(id) < 0 && CLEANUP_MANUAL_IDS.indexOf(id) < 0);
+    if (ids.length) orphan[n] = ids.length + '行（マニュアルID: ' + Array.from(new Set(ids)).join(', ') + '）';
+  });
+  return {
+    manuals: manuals.filter(m => CLEANUP_MANUAL_IDS.indexOf(String(m.id)) >= 0).map(m => ({ id: String(m.id), title: String(m.title) })),
+    orphanRows: orphan,
+    staff: readAll_('staff').filter(r => CLEANUP_STAFF_NAMES.indexOf(String(r.name)) >= 0 && !r.lineUserId).map(r => String(r.name)),
+    logs: readAll_('logs').length + '行（視聴の記録をすべて）',
+    reports: readAll_('reports').length + '行（字幕の報告をすべて）'
+  };
+}
+
+function deleteRowsWhere_(name, test) {
+  const sh = sheet_(name);
+  const rows = readAll_(name);
+  for (let i = rows.length - 1; i >= 0; i--) if (test(rows[i])) sh.deleteRow(i + 2);
+}
+
 /** 通知の設定を確かめる用。エディタでこの関数を選んで「実行」すると、テストの通知が届く */
 function testNotify() {
   const ok = notifyAdmins_('【FLAT マニュアル】通知のテストです。これが届いていれば設定はOKです。');
