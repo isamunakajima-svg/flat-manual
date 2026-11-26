@@ -17,7 +17,21 @@ const DEFAULT_MODEL = 'gemini-3.6-flash';
 const LANGS = ['ja', 'en', 'vi'];          // 字幕・手順の言語。先頭が元の言語
 const LANG_NAMES = { ja: '日本語', en: 'English', vi: 'Tiếng Việt' };
 const GEMINI_BASE = 'https://generativelanguage.googleapis.com';
-const ADMIN_PAGE_URL = 'https://isamunakajima-svg.github.io/flat-manual/admin.html';
+// 通知のリンクは LIFF 経由で開く（LINEで本人確認されるので、パスワードなしで入れる）
+const LIFF_BASE_URL = 'https://liff.line.me/2012783579-69Zwk48A/';
+const ADMIN_PAGE_URL = LIFF_BASE_URL + 'admin.html';
+function pageUrl_(page, id) {
+  return LIFF_BASE_URL + page + (id ? '?id=' + encodeURIComponent(id) : '');
+}
+
+// 役割：シートには日本語で入れる（英語の admin / editor も読める）
+const ROLE_LABELS = { '': 'スタッフ', editor: '店舗責任者', admin: '管理者' };
+function normRole_(v) {
+  v = String(v || '').trim();
+  if (v === 'admin' || v === '管理者') return 'admin';
+  if (v === 'editor' || v === '店舗責任者' || v === '責任者') return 'editor';
+  return '';
+}
 
 const SHEETS = {
   manuals: ['id', 'title', 'youtubeId', 'status', 'createdAt', 'updatedAt', 'memo', 'note', 'store', 'folder', 'tags', 'author', 'authorId', 'driveFileId',
@@ -71,6 +85,32 @@ function seedLists_() {
   if (fo && fo.getLastRow() < 2) DEFAULT_FOLDERS.forEach(n => fo.appendRow([n, 'setup', new Date().toISOString()]));
 }
 
+/** staff シートの「店舗」「役割」を選択式にする（店舗の一覧が変わったら作り直す） */
+function staffDropdowns_(force) {
+  const props = PropertiesService.getScriptProperties();
+  const stores = listNames_('stores');
+  const sig = 'v1|' + stores.join(',');
+  if (!force && props.getProperty('STAFF_DROPDOWN_SIG') === sig) return;
+  const sh = sheet_('staff');
+  if (!sh) return;
+  const h = SHEETS.staff;
+  const rows = 300;
+  // 英語で入っている役割は日本語に直す
+  const roleCol = h.indexOf('role') + 1;
+  if (sh.getLastRow() > 1) {
+    const rng = sh.getRange(2, roleCol, sh.getLastRow() - 1, 1);
+    rng.setValues(rng.getValues().map(r => [r[0] === '' ? '' : ROLE_LABELS[normRole_(r[0])]]));
+  }
+  sh.getRange(2, roleCol, rows, 1).setDataValidation(
+    SpreadsheetApp.newDataValidation().requireValueInList(['スタッフ', '店舗責任者', '管理者'], true).setAllowInvalid(false).build());
+  const storeOptions = stores.filter(x => x !== COMMON_STORE);
+  if (storeOptions.length) {
+    sh.getRange(2, h.indexOf('store') + 1, rows, 1).setDataValidation(
+      SpreadsheetApp.newDataValidation().requireValueInList(storeOptions, true).setAllowInvalid(true).build());
+  }
+  props.setProperty('STAFF_DROPDOWN_SIG', sig);
+}
+
 /** 列やシートが増えたときに追加する（setup をやり直さなくても動くように） */
 function ensureHeaders_() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -92,6 +132,7 @@ function ensureHeaders_() {
       sh.getRange(1, 1, 1, header.length).setValues([header]).setFontWeight('bold');
     }
   });
+  try { staffDropdowns_(false); } catch (e) { console.warn('選択式にできませんでした: ' + e); }
 }
 
 /* ========== 入口 ========== */
@@ -201,7 +242,7 @@ function actor_(req) {
     const who = verifyLine_(req.idToken);
     const row = staffRows_().find(r => String(r.lineUserId) === who.userId);
     if (row && row.active === true && row.approved === true) {
-      const role = String(row.role || '').trim();
+      const role = normRole_(row.role);
       if (role === 'admin' || role === 'editor') {
         return { role: role, name: String(row.name), store: String(row.store || ''), userId: who.userId };
       }
@@ -488,7 +529,7 @@ function identify_(req) {
   if (!row) return { status: 'unregistered', lineName: who.lineName, userId: who.userId };
   if (row.active !== true) return { status: 'blocked', name: row.name };
   if (row.approved !== true) return { status: 'pending', name: row.name };
-  return { status: 'ok', name: String(row.name), userId: who.userId, role: String(row.role || ''), store: String(row.store || '') };
+  return { status: 'ok', name: String(row.name), userId: who.userId, role: normRole_(row.role), store: String(row.store || '') };
 }
 
 function requireViewer_(req) {
@@ -595,7 +636,7 @@ function staffAdminList_() {
   return staffRows_().map(r => ({
     name: String(r.name), active: r.active === true, approved: r.approved === true,
     linked: !!r.lineUserId, lineName: r.lineName || '', registeredAt: r.registeredAt ? String(r.registeredAt) : '',
-    store: String(r.store || ''), role: String(r.role || '')
+    store: String(r.store || ''), role: normRole_(r.role)
   }));
 }
 
@@ -613,9 +654,9 @@ function staffUpdate_(req) {
     else if (req.op === 'set') {
       if (req.store !== undefined) set('store', String(req.store || ''));
       if (req.role !== undefined) {
-        const role = String(req.role || '');
-        if (['', 'editor', 'admin'].indexOf(role) < 0) throw new Error('不明な役割');
-        set('role', role);
+        const role = normRole_(req.role);
+        if (req.role && !role) throw new Error('不明な役割');
+        set('role', ROLE_LABELS[role]);
       }
     }
     else throw new Error('不明な操作');
@@ -1368,7 +1409,7 @@ function runSheetImport_(job, started) {
 /* ========== 公開申請（店舗責任者 → 管理者） ========== */
 
 function editUrl_(id) {
-  return ADMIN_PAGE_URL.replace('admin.html', 'edit.html') + '?id=' + encodeURIComponent(id);
+  return pageUrl_('edit.html', id);
 }
 
 /** ボタン1つ付きのLINE。onlyIds が true なら ids の人だけ、false なら管理者＋ids */
@@ -1408,7 +1449,7 @@ function reviewDecision_(req, actor) {
   if (req.decision === 'publish') {
     if (!m.youtubeId && m.type !== 'recipe') throw new Error('YouTubeのURLを入れてから公開してください');
     saveManual_({ id: m.id, status: 'published', note: '' });
-    if (row.authorId) pushButton_('【FLAT マニュアル】「' + m.title + '」が公開されました。ありがとうございます！', '見る', ADMIN_PAGE_URL.replace('admin.html', 'view.html') + '?id=' + encodeURIComponent(m.id), [row.authorId], true);
+    if (row.authorId) pushButton_('【FLAT マニュアル】「' + m.title + '」が公開されました。ありがとうございます！', '見る', pageUrl_('view.html', m.id), [row.authorId], true);
     return { status: 'published' };
   }
   if (req.decision === 'reject') {
@@ -1422,7 +1463,7 @@ function reviewDecision_(req, actor) {
 
 /** 下書きができた（または失敗した）ことをLINEで知らせる */
 function notifyDone_(id, title, errorMsg, extraTo) {
-  const editUrl = ADMIN_PAGE_URL.replace('admin.html', 'edit.html') + '?id=' + encodeURIComponent(id);
+  const editUrl = pageUrl_('edit.html', id);
   const text = errorMsg
     ? '【FLAT マニュアル】「' + title + '」の下書きを作れませんでした。\n' + errorMsg
     : '【FLAT マニュアル】「' + title + '」の下書きができました。確認して公開してください。';
