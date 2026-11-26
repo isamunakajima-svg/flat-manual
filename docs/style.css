@@ -211,3 +211,7 @@ table.ingr td.note { color: var(--sub); font-size: 13px; }
 .tabbar .n { margin-left: 5px; font-size: 13px; opacity: .65; }
 .tabbar .n:empty { display: none; }
 .tabbar .n.alert { opacity: 1; background: #d9534f; color: #fff; border-radius: 99px; padding: 1px 7px; }
+/* フォルダのタブの並べ替え */
+.tabbar button { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
+.tabbar.sorting { overflow-x: hidden; }
+.tabbar button.dragging { transform: scale(1.08); box-shadow: 0 4px 14px rgba(0,0,0,.18); background: var(--accent); border-color: var(--accent); color: #fff; z-index: 2; }

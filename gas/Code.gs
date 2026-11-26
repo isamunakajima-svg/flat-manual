@@ -40,7 +40,7 @@ const SHEETS = {
   ingredients: ['manualId', 'idx', 'grp', 'name', 'amount', 'unit', 'note'],
   subs: ['manualId', 'idx', 'start', 'end'].concat(LANGS.map(l => 'text_' + l)),
   quiz: ['manualId', 'idx', 'question', 'choices', 'answer'],
-  staff: ['name', 'active', 'lineUserId', 'lineName', 'approved', 'registeredAt', 'store', 'role'],
+  staff: ['name', 'active', 'lineUserId', 'lineName', 'approved', 'registeredAt', 'store', 'role', 'folderOrder'],
   logs: ['sessionId', 'ts', 'staff', 'manualId', 'watchedSec', 'duration', 'maxPos', 'completed', 'stepViews', 'quizScore', 'quizTotal', 'confirmed'],
   reports: ['ts', 'staff', 'manualId', 'subIdx', 'note', 'done'],
   stores: ['name'],
@@ -218,6 +218,7 @@ function doPost(e) {
     return json_({ ok: false, error: 'bad request' });
   }
   try {
+    staffMemo_ = null;
     ensureHeaders_();
     if (req.action === 'batch') {
       // 画面を開くときの何回分もの呼び出しを、1回の通信でまとめて返す（読むだけのもの）
@@ -572,7 +573,8 @@ function identify_(req) {
   if (!row) return { status: 'unregistered', lineName: who.lineName, userId: who.userId };
   if (row.active !== true) return { status: 'blocked', name: row.name };
   if (row.approved !== true) return { status: 'pending', name: row.name };
-  return { status: 'ok', name: String(row.name), userId: who.userId, role: normRole_(row.role), store: String(row.store || '') };
+  return { status: 'ok', name: String(row.name), userId: who.userId, role: normRole_(row.role), store: String(row.store || ''),
+    folderOrder: parseFolderOrder_(row.folderOrder), _row: row._row };
 }
 
 function requireViewer_(req) {
@@ -594,6 +596,7 @@ function me_(req) {
   else if (me.role === 'editor' && me.status === 'ok') out.editStores = [COMMON_STORE].concat(me.store ? [me.store] : []);
   else out.editStores = [];
   out.canEdit = out.editStores.length > 0;
+  out.folderOrder = me.folderOrder || [];
   if (me.status === 'unregistered') {
     out.candidates = staffRows_().filter(r => r.active === true && !r.lineUserId).map(r => String(r.name));
   }
@@ -601,6 +604,19 @@ function me_(req) {
     out.candidates = staffRows_().filter(r => r.active === true).map(r => String(r.name));
   }
   return out;
+}
+
+function parseFolderOrder_(v) {
+  try { const a = JSON.parse(String(v || '[]')); return Array.isArray(a) ? a.map(String).slice(0, 100) : []; } catch (e) { return []; }
+}
+
+/** 一覧のフォルダのタブの並び順を、その人ごとに保存する */
+function saveFolderOrder_(req) {
+  const me = requireViewer_(req);
+  if (!me._row) return { saved: false }; // 管理パスワードで開いているときは、その端末だけに覚える
+  const order = (Array.isArray(req.order) ? req.order : []).map(x => String(x).slice(0, 50)).slice(0, 100);
+  sheet_('staff').getRange(me._row, SHEETS.staff.indexOf('folderOrder') + 1).setValue(JSON.stringify(order));
+  return { saved: true };
 }
 
 /** 初回：名前を選んでLINEと結び付ける（承認待ちになる） */
@@ -1604,6 +1620,7 @@ const PUBLIC_ACTIONS = {
   meta: req => { requireViewer_(req); return meta_(); },
   image: req => { requireViewer_(req); return getImage_(req); },
   images: req => { requireViewer_(req); return getImages_(req); },
+  saveFolderOrder: req => saveFolderOrder_(req),
   register: req => register_(req),
   list: req => { requireViewer_(req); return listManuals_(false); },
   get: req => { requireViewer_(req); return getManual_(req.id, false); },

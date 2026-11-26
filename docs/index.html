@@ -16,7 +16,7 @@
   } catch (e) {}
 })();
 </script>
-<link rel="stylesheet" href="style.css?v=20261126c">
+<link rel="stylesheet" href="style.css?v=20261126d">
 </head>
 <body>
 <header class="bar">
@@ -29,6 +29,7 @@
   <div id="content" class="hidden">
     <!-- フォルダのタブ -->
     <nav class="tabbar" id="folderTabs"></nav>
+    <p class="muted hidden" id="dragHint" style="margin:-6px 0 8px;font-size:13px">フォルダ名を長押しして横にずらすと、自分用に並べ替えられます。</p>
     <!-- ブラウザで名前を選ぶ方式のとき -->
     <div class="card hidden" id="pickCard">
       <label class="field" style="margin:0">
@@ -52,8 +53,8 @@
   <p class="muted" id="loading">読み込み中…</p>
 </main>
 
-<script src="config.js?v=20261126c"></script>
-<script src="common.js?v=20261126c"></script>
+<script src="config.js?v=20261126d"></script>
+<script src="common.js?v=20261126d"></script>
 <script>
 (async function () {
   const $ = id => document.getElementById(id);
@@ -96,7 +97,14 @@
     return (ia < 0 ? 999 : ia) - (ib < 0 ? 999 : ib) || a.localeCompare(b, 'ja');
   });
   const stores = order(used('store'), meta.stores);
-  const folders = order(used('folder'), meta.folders);
+  let folders = order(used('folder'), meta.folders);
+  // 自分で並べたフォルダの順（LINEの人はサーバーに、管理パスワードの端末はこの端末に保存）
+  let myOrder = (me.folderOrder && me.folderOrder.length) ? me.folderOrder : FM.store.get('folderOrder', []);
+  const applyMyOrder = () => {
+    const pos = f => { const i = myOrder.indexOf(f); return i >= 0 ? i : 1000 + folders.indexOf(f); };
+    folders = folders.slice().sort((a, b) => pos(a) - pos(b));
+  };
+  applyMyOrder();
   $('fStore').innerHTML += stores.map(s => `<option>${FM.esc(s)}</option>`).join('');
   if (stores.length < 2) $('storeRow').classList.add('hidden');
   // フォルダのタブ（'' = すべて、'__none' = フォルダなし）。前回選んだものを覚えておく
@@ -119,7 +127,8 @@
     const tabs = [['', 'すべて']].concat(folders.map(f => [f, f]));
     if (list.some(m => !m.folder)) tabs.push(['__none', 'フォルダなし']);
     $('folderTabs').innerHTML = tabs.map(([v, l]) =>
-      `<button data-folder="${FM.esc(v)}" class="${v === curFolder ? 'on' : ''}">${FM.esc(l)}<span class="n">${count(v)}</span></button>`).join('');
+      `<button data-folder="${FM.esc(v)}" class="${v === curFolder ? 'on' : ''}${v && v !== '__none' ? ' movable' : ''}">${FM.esc(l)}<span class="n">${count(v)}</span></button>`).join('');
+    $('dragHint').classList.toggle('hidden', folders.length < 2 || FM.store.get('dragHintSeen', false));
 
     if (!list.length) { $('list').innerHTML = '<p class="muted">公開中のマニュアルはまだありません。</p>'; return; }
     const hit = base.filter(m => curFolder === '' ? true : curFolder === '__none' ? !m.folder : m.folder === curFolder);
@@ -153,8 +162,74 @@
     if (on) on.scrollIntoView({ inline: 'center', block: 'nearest' });
   }
   $('folderTabs').addEventListener('click', e => {
+    if (dragJustEnded) { e.preventDefault(); return; }
     const b = e.target.closest('button[data-folder]'); if (b) setFolder(b.dataset.folder);
   });
+
+  /* ---------- フォルダのタブを長押しして、横にずらして並べ替える ---------- */
+  const bar = $('folderTabs');
+  let press = null, drag = null, dragJustEnded = false;
+  function startPress(x, y, target) {
+    const b = target.closest && target.closest('button.movable');
+    if (!b) return;
+    press = { b, x, y, timer: setTimeout(() => beginDrag(b, x), 450) };
+  }
+  function cancelPress() { if (press) { clearTimeout(press.timer); press = null; } }
+  function beginDrag(b, x) {
+    press = null;
+    drag = { b, lastX: x };
+    b.classList.add('dragging');
+    bar.classList.add('sorting');
+    try { navigator.vibrate && navigator.vibrate(30); } catch (e) {}
+  }
+  function moveDrag(x) {
+    if (!drag) return;
+    drag.lastX = x;
+    // 指の下にあるタブと入れ替える
+    const others = Array.from(bar.querySelectorAll('button.movable')).filter(el => el !== drag.b);
+    for (const el of others) {
+      const r = el.getBoundingClientRect();
+      if (x > r.left && x < r.right) {
+        const mid = r.left + r.width / 2;
+        if (x < mid) bar.insertBefore(drag.b, el); else bar.insertBefore(drag.b, el.nextSibling);
+        break;
+      }
+    }
+    // 端に来たら横に送る
+    const br = bar.getBoundingClientRect();
+    if (x < br.left + 40) bar.scrollLeft -= 12;
+    else if (x > br.right - 40) bar.scrollLeft += 12;
+  }
+  function endDrag() {
+    if (!drag) return;
+    drag.b.classList.remove('dragging');
+    bar.classList.remove('sorting');
+    drag = null;
+    dragJustEnded = true; setTimeout(() => { dragJustEnded = false; }, 350);
+    myOrder = Array.from(bar.querySelectorAll('button.movable')).map(el => el.dataset.folder);
+    FM.store.set('folderOrder', myOrder);
+    FM.store.set('dragHintSeen', true);
+    applyMyOrder();
+    render();
+    if (me.mode === 'line') FM.api('saveFolderOrder', { order: myOrder }).catch(() => FM.toast('並び順を保存できませんでした', true));
+  }
+  // スマホ（指）
+  bar.addEventListener('touchstart', e => { const t = e.touches[0]; startPress(t.clientX, t.clientY, e.target); }, { passive: true });
+  bar.addEventListener('touchmove', e => {
+    const t = e.touches[0];
+    if (drag) { e.preventDefault(); moveDrag(t.clientX); return; }
+    if (press && (Math.abs(t.clientX - press.x) > 8 || Math.abs(t.clientY - press.y) > 8)) cancelPress(); // ふつうの横スクロール
+  }, { passive: false });
+  bar.addEventListener('touchend', () => { cancelPress(); endDrag(); });
+  bar.addEventListener('touchcancel', () => { cancelPress(); endDrag(); });
+  bar.addEventListener('contextmenu', e => { if (press || drag) e.preventDefault(); });
+  // パソコン（マウス）
+  bar.addEventListener('mousedown', e => startPress(e.clientX, e.clientY, e.target));
+  window.addEventListener('mousemove', e => {
+    if (drag) { e.preventDefault(); moveDrag(e.clientX); return; }
+    if (press && (Math.abs(e.clientX - press.x) > 8 || Math.abs(e.clientY - press.y) > 8)) cancelPress();
+  });
+  window.addEventListener('mouseup', () => { cancelPress(); endDrag(); });
 
   // タグから来たとき（#%23タグ）だけ検索欄に入れる。LINEが付ける #context_token=… などは無視する
   if (location.hash.length > 1) {
