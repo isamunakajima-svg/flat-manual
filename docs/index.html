@@ -16,7 +16,7 @@
   } catch (e) {}
 })();
 </script>
-<link rel="stylesheet" href="style.css?v=20261126">
+<link rel="stylesheet" href="style.css?v=20261126b">
 </head>
 <body>
 <header class="bar">
@@ -51,14 +51,14 @@
   <p class="muted" id="loading">読み込み中…</p>
 </main>
 
-<script src="config.js?v=20261126"></script>
-<script src="common.js?v=20261126"></script>
+<script src="config.js?v=20261126b"></script>
+<script src="common.js?v=20261126b"></script>
 <script>
 (async function () {
   const $ = id => document.getElementById(id);
   let me;
   try {
-    me = await FM.ready($('gate'));
+    me = await FM.ready($('gate'), [['list'], ['meta']]);
   } catch (e) {
     $('loading').textContent = '読み込めませんでした：' + e.message;
     return;

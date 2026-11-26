@@ -20,7 +20,40 @@
   const auth = { idToken: '', mode: '' };
 
   // GASへの問い合わせ。Content-Type を付けない（text/plain）ので事前確認が要らない
+  // まとめて先に取っておいた返事（同じ呼び出しが来たら、通信せずにこれを使う）
+  const preloaded = {};
+  const preKey = (action, params) => {
+    const p = Object.assign({}, params || {}); delete p.key; delete p.idToken;
+    return action + '|' + JSON.stringify(p);
+  };
+  // 何回分もの呼び出しを、1回の通信にまとめる。calls: [['list'], ['get', { id }], …]
+  async function batch(calls) {
+    const res = await rawApi('batch', { calls: calls.map(c => ({ action: c[0], params: c[1] || {} })) });
+    calls.forEach((c, i) => { preloaded[preKey(c[0], c[1])] = res[i]; });
+    return res;
+  }
+
   async function api(action, params) {
+    const k = preKey(action, params);
+    if (preloaded[k]) {
+      const r = preloaded[k]; delete preloaded[k];
+      if (r.ok) return r.data;
+      await handleAuth(r.error || 'エラー');
+    }
+    return rawApi(action, params);
+  }
+
+  async function handleAuth(msg) {
+    // LINEのログインが切れていたら、ログインし直す
+    if (msg.indexOf('AUTH:') === 0 && window.liff && LIFF_ID) {
+      try { liff.logout(); } catch (e) {}
+      liff.login({ redirectUri: location.href });
+      await new Promise(() => {});
+    }
+    throw new Error(msg.replace(/^(AUTH|BLOCKED|PENDING|UNREGISTERED):/, ''));
+  }
+
+  async function rawApi(action, params) {
     const extra = {};
     if (auth.idToken) extra.idToken = auth.idToken;
     const adminKey = store.get('adminKey', '');
@@ -29,16 +62,7 @@
     const res = await fetch(GAS_URL, { method: 'POST', body: body, redirect: 'follow' });
     if (!res.ok) throw new Error('通信エラー (' + res.status + ')');
     const json = await res.json();
-    if (!json.ok) {
-      const msg = json.error || 'エラー';
-      // LINEのログインが切れていたら、ログインし直す
-      if (msg.indexOf('AUTH:') === 0 && window.liff && LIFF_ID) {
-        try { liff.logout(); } catch (e) {}
-        liff.login({ redirectUri: location.href });
-        await new Promise(() => {});
-      }
-      throw new Error(msg.replace(/^(AUTH|BLOCKED|PENDING|UNREGISTERED):/, ''));
-    }
+    if (!json.ok) await handleAuth(json.error || 'エラー');
     return json.data;
   }
 
@@ -156,8 +180,10 @@
     return true;
   }
 
-  async function ready(gateEl) {
+  // extra：ログインの確認と一緒に取っておく呼び出し（例 [['list'], ['meta']]）
+  async function ready(gateEl, extra) {
     if (LIFF_ID && !store.get('adminKey', '')) await lineLogin();
+    if (extra && extra.length) { try { await batch([['me']].concat(extra)); } catch (e) {} }
     const me = await api('me');
     auth.mode = me.mode;
     if (me.status === 'ok') {
@@ -204,10 +230,48 @@
   }
 
   // レシピの写真：GAS経由で読み込む（同じ写真は1回だけ）
+  // 写真：一度見たものはスマホの中にしまっておき、まだのものは数枚ずつまとめて取りに行く
   const imgCache = {};
+  let dbP = null;
+  function db() {
+    if (!dbP) dbP = new Promise(resolve => {
+      try {
+        const r = indexedDB.open('flatManualPhotos', 1);
+        r.onupgradeneeded = () => r.result.createObjectStore('p');
+        r.onsuccess = () => resolve(r.result);
+        r.onerror = () => resolve(null);
+      } catch (e) { resolve(null); }
+    });
+    return dbP;
+  }
+  async function dbGet(id) {
+    const d = await db(); if (!d) return '';
+    return new Promise(resolve => {
+      try { const q = d.transaction('p').objectStore('p').get(id); q.onsuccess = () => resolve(q.result || ''); q.onerror = () => resolve(''); }
+      catch (e) { resolve(''); }
+    });
+  }
+  async function dbPut(id, v) {
+    const d = await db(); if (!d || !v) return;
+    try { d.transaction('p', 'readwrite').objectStore('p').put(v, id); } catch (e) {}
+  }
+  let queue = [], timer = null;
+  function flush() {
+    timer = null;
+    const items = queue; queue = [];
+    for (let i = 0; i < items.length; i += 6) {
+      const part = items.slice(i, i + 6);
+      rawApi('images', { ids: part.map(x => x.id) }).then(map => {
+        part.forEach(x => { const v = (map || {})[x.id]; if (v) { dbPut(x.id, v); x.ok(v); } else x.ng(new Error('写真がありません')); });
+      }).catch(e => part.forEach(x => x.ng(e)));
+    }
+  }
   function image(id) {
     if (!id) return Promise.resolve('');
-    if (!imgCache[id]) imgCache[id] = api('image', { id }).then(r => r.data).catch(e => { delete imgCache[id]; throw e; });
+    if (!imgCache[id]) imgCache[id] = dbGet(id).then(hit => hit || new Promise((ok, ng) => {
+      queue.push({ id, ok, ng });
+      if (!timer) timer = setTimeout(flush, 30);
+    })).catch(e => { delete imgCache[id]; throw e; });
     return imgCache[id];
   }
   // <img data-photo="ID"> を順に読み込む
@@ -249,5 +313,5 @@
     return m.youtubeId ? `<img class="thumb" src="https://i.ytimg.com/vi/${esc(m.youtubeId)}/mqdefault.jpg" alt="">` : '<div class="thumb-icon">🎬</div>';
   }
 
-  window.FM = { thumbHtml, image, loadPhotos, resizeImage, scaleAmount, api, beacon, store, fmtTime, parseTime, esc, qs, uid, toast, loadYouTube, indexAt, ready, lineLogin, auth, tagsHtml, parseTags, LIFF_ID };
+  window.FM = { batch, thumbHtml, image, loadPhotos, resizeImage, scaleAmount, api, beacon, store, fmtTime, parseTime, esc, qs, uid, toast, loadYouTube, indexAt, ready, lineLogin, auth, tagsHtml, parseTags, LIFF_ID };
 })();

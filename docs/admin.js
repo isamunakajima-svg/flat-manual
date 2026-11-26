@@ -8,11 +8,13 @@
 
   // 管理パスワード、またはLINEのログイン（店舗責任者・管理者）で入る
   const actor = { role: '', name: '', store: '' };
-  async function requireLogin(onReady) {
+  // extra：ログインの確認と一緒に取っておく呼び出し（1回の通信で済ませる）
+  async function requireLogin(onReady, extra) {
     const box = document.getElementById('loginBox');
     const main = document.getElementById('adminMain');
     const tryIt = async (silent) => {
       try {
+        if (extra && extra.length) { try { await FM.batch([['ping']].concat(extra)); } catch (e) {} }
         const a = await adminApi('ping');
         Object.assign(actor, a);
         box.classList.add('hidden');

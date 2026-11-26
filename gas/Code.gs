@@ -124,6 +124,15 @@ function staffDropdowns_(force) {
 
 /** 列やシートが増えたときに追加する（setup をやり直さなくても動くように） */
 function ensureHeaders_() {
+  // 毎回シートを調べると遅いので、10分に1回だけ確かめる
+  const cache = CacheService.getScriptCache();
+  const sig = 'h1|' + Utilities.base64Encode(Utilities.computeDigest(Utilities.DigestAlgorithm.MD5, JSON.stringify(SHEETS)));
+  if (cache.get('HEADERS_OK') === sig) return;
+  ensureHeadersNow_();
+  cache.put('HEADERS_OK', sig, 600);
+}
+
+function ensureHeadersNow_() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   let created = false;
   Object.keys(SHEETS).forEach(name => {
@@ -210,21 +219,38 @@ function doPost(e) {
   }
   try {
     ensureHeaders_();
-    const action = req.action;
-    const pub = PUBLIC_ACTIONS[action];
-    const adm = ADMIN_ACTIONS[action];
-    if (pub) return json_({ ok: true, data: pub(req) });
-    if (adm) {
-      const actor = actor_(req);
-      return json_({ ok: true, data: adm(req, actor) });
+    if (req.action === 'batch') {
+      // 画面を開くときの何回分もの呼び出しを、1回の通信でまとめて返す（読むだけのもの）
+      const out = (req.calls || []).slice(0, 10).map(c => {
+        const one = Object.assign({}, c.params || {}, { action: c.action, key: req.key, idToken: req.idToken });
+        if (BATCH_OK.indexOf(one.action) < 0) return { ok: false, error: 'まとめられません: ' + one.action };
+        try { return { ok: true, data: runAction_(one) }; }
+        catch (err) { return { ok: false, error: errText_(err, one) }; }
+      });
+      return json_({ ok: true, data: out });
     }
-    return json_({ ok: false, error: 'unknown action: ' + action });
+    return json_({ ok: true, data: runAction_(req) });
   } catch (err) {
-    // 原因を探しやすいように、エラーの場所（Code.gsの行番号）も付けて返す
-    const where = String(err && err.stack || '').split('\n').filter(l => /Code|コード|\.gs/.test(l)).slice(0, 3).map(l => l.trim()).join(' / ');
-    console.error('doPost ' + (req && req.action) + ': ' + (err && err.stack || err));
-    return json_({ ok: false, error: String(err && err.message || err) + (where ? '（' + where + '）' : '') });
+    return json_({ ok: false, error: errText_(err, req) });
   }
+}
+
+const BATCH_OK = ['me', 'meta', 'list', 'get', 'ping', 'listAll', 'getDraft', 'staffList'];
+
+function runAction_(req) {
+  const action = req.action;
+  const pub = PUBLIC_ACTIONS[action];
+  const adm = ADMIN_ACTIONS[action];
+  if (pub) return pub(req);
+  if (adm) return adm(req, actor_(req));
+  throw new Error('unknown action: ' + action);
+}
+
+function errText_(err, req) {
+  // 原因を探しやすいように、エラーの場所（Code.gsの行番号）も付けて返す
+  const where = String(err && err.stack || '').split('\n').filter(l => /Code|コード|\.gs/.test(l)).slice(0, 3).map(l => l.trim()).join(' / ');
+  console.error('doPost ' + (req && req.action) + ': ' + (err && err.stack || err));
+  return String(err && err.message || err) + (where ? '（' + where + '）' : '');
 }
 
 function json_(obj) {
@@ -251,7 +277,7 @@ function actor_(req) {
   if (isAdmin_(req.key)) return { role: 'admin', name: '管理者', store: '' };
   if (lineEnabled_() && req.idToken) {
     const who = verifyLine_(req.idToken);
-    const row = staffRows_().find(r => String(r.lineUserId) === who.userId);
+    const row = staffRowsForAuth_().find(r => String(r.lineUserId) === who.userId);
     if (row && row.active === true && row.approved === true) {
       const role = normRole_(row.role);
       if (role === 'admin' || role === 'editor') {
@@ -524,6 +550,12 @@ function verifyLine_(idToken) {
 function staffRows_() {
   return readAll_('staff').map((r, i) => Object.assign(r, { _row: i + 2 })).filter(r => r.name);
 }
+// 本人確認用（1回の通信の中では1度だけシートを読む）
+let staffMemo_ = null;
+function staffRowsForAuth_() {
+  if (!staffMemo_) staffMemo_ = staffRows_();
+  return staffMemo_;
+}
 
 /**
  * リクエストの送り主を調べる。
@@ -536,7 +568,7 @@ function identify_(req) {
     return { status: 'ok', name: req.staff || '(未選択)', legacy: true };
   }
   const who = verifyLine_(req.idToken);
-  const row = staffRows_().find(r => String(r.lineUserId) === who.userId);
+  const row = staffRowsForAuth_().find(r => String(r.lineUserId) === who.userId);
   if (!row) return { status: 'unregistered', lineName: who.lineName, userId: who.userId };
   if (row.active !== true) return { status: 'blocked', name: row.name };
   if (row.approved !== true) return { status: 'pending', name: row.name };
@@ -1134,14 +1166,50 @@ function uploadImage_(req) {
 function getImage_(req) {
   const id = String(req.id || '');
   if (!/^[A-Za-z0-9_-]{10,}$/.test(id)) throw new Error('画像が見つかりません');
-  const cache = CacheService.getScriptCache();
-  const hit = cache.get('img_' + id);
+  const hit = cacheGetBig_('img_' + id);
   if (hit) return { data: hit };
   if (!isPhotoFile_(id)) throw new Error('画像が見つかりません');
   const blob = DriveApp.getFileById(id).getBlob();
   const data = 'data:' + blob.getContentType() + ';base64,' + Utilities.base64Encode(blob.getBytes());
-  if (data.length < 95000) { try { cache.put('img_' + id, data, 21600); } catch (e) {} }
+  cachePutBig_('img_' + id, data, 21600);
   return { data: data };
+}
+
+/** 写真を何枚かまとめて返す（{ id: dataURL }） */
+function getImages_(req) {
+  const out = {};
+  (req.ids || []).slice(0, 8).forEach(id => {
+    try { out[id] = getImage_({ id: id }).data; } catch (e) { out[id] = ''; }
+  });
+  return out;
+}
+
+/** 100KBを超える値も、分けてキャッシュにしまう（1MBまで） */
+function cachePutBig_(key, value, sec) {
+  const cache = CacheService.getScriptCache();
+  const size = 90000;
+  try {
+    if (value.length <= size) { cache.put(key, value, sec); return; }
+    const n = Math.ceil(value.length / size);
+    if (n > 11) return;
+    const parts = {};
+    for (let i = 0; i < n; i++) parts[key + '_' + i] = value.slice(i * size, (i + 1) * size);
+    parts[key] = 'parts:' + n;
+    cache.putAll(parts, sec);
+  } catch (e) {}
+}
+
+function cacheGetBig_(key) {
+  const cache = CacheService.getScriptCache();
+  const v = cache.get(key);
+  if (!v) return '';
+  const m = /^parts:(\d+)$/.exec(v);
+  if (!m) return v;
+  const keys = [];
+  for (let i = 0; i < Number(m[1]); i++) keys.push(key + '_' + i);
+  const got = cache.getAll(keys);
+  if (keys.some(k => !got[k])) return '';
+  return keys.map(k => got[k]).join('');
 }
 
 /* ========== レシピの下書き（写真とメモから、裏で作る） ========== */
@@ -1535,6 +1603,7 @@ const PUBLIC_ACTIONS = {
   me: req => me_(req),
   meta: req => { requireViewer_(req); return meta_(); },
   image: req => { requireViewer_(req); return getImage_(req); },
+  images: req => { requireViewer_(req); return getImages_(req); },
   register: req => register_(req),
   list: req => { requireViewer_(req); return listManuals_(false); },
   get: req => { requireViewer_(req); return getManual_(req.id, false); },
