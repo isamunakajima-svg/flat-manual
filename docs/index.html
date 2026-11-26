@@ -16,7 +16,7 @@
   } catch (e) {}
 })();
 </script>
-<link rel="stylesheet" href="style.css?v=20261126d">
+<link rel="stylesheet" href="style.css?v=20261126e">
 </head>
 <body>
 <header class="bar">
@@ -53,8 +53,8 @@
   <p class="muted" id="loading">読み込み中…</p>
 </main>
 
-<script src="config.js?v=20261126d"></script>
-<script src="common.js?v=20261126d"></script>
+<script src="config.js?v=20261126e"></script>
+<script src="common.js?v=20261126e"></script>
 <script>
 (async function () {
   const $ = id => document.getElementById(id);
@@ -150,7 +150,7 @@
     // 「すべて」のときはフォルダごとにまとめる
     const groups = {};
     hit.forEach(m => { const k = m.folder || 'フォルダなし'; (groups[k] = groups[k] || []).push(m); });
-    const keys = order(Object.keys(groups), meta.folders.concat(['フォルダなし']));
+    const keys = order(Object.keys(groups), folders.concat(['フォルダなし'])); // 自分で並べた順
     $('list').innerHTML = keys.map(k => `
       <div class="folder-head">📁 ${FM.esc(k)} <span class="count">${groups[k].length}</span></div>
       ${groups[k].map(card).join('')}`).join('');
@@ -175,43 +175,75 @@
     press = { b, x, y, timer: setTimeout(() => beginDrag(b, x), 450) };
   }
   function cancelPress() { if (press) { clearTimeout(press.timer); press = null; } }
+  // 動かしているタブは指についてくる。ほかのタブは、空いた場所へなめらかに押しのけられる
+  const cx = clientX => clientX - bar.getBoundingClientRect().left + bar.scrollLeft; // タブの列の中での位置
   function beginDrag(b, x) {
     press = null;
-    drag = { b, lastX: x };
+    const items = Array.from(bar.querySelectorAll('button.movable'));
+    const br = bar.getBoundingClientRect();
+    const slots = items.map(el => { const r = el.getBoundingClientRect(); return { el, left: r.left - br.left + bar.scrollLeft, width: r.width }; });
+    const from = items.indexOf(b);
+    const gap = slots.length > 1 ? (slots[1].left - slots[0].left - slots[0].width) : 6;
+    drag = { b, items, slots, from, to: from, gap, startX: cx(x), lastClient: x, raf: 0 };
+    items.forEach(el => { el.style.transition = el === b ? 'none' : 'transform .22s cubic-bezier(.2,.8,.2,1)'; });
     b.classList.add('dragging');
     bar.classList.add('sorting');
     try { navigator.vibrate && navigator.vibrate(30); } catch (e) {}
+    const loop = () => { if (!drag) return; edgeScroll(); layout(); drag.raf = requestAnimationFrame(loop); };
+    drag.raf = requestAnimationFrame(loop);
   }
-  function moveDrag(x) {
-    if (!drag) return;
-    drag.lastX = x;
-    // 指の下にあるタブと入れ替える
-    const others = Array.from(bar.querySelectorAll('button.movable')).filter(el => el !== drag.b);
-    for (const el of others) {
-      const r = el.getBoundingClientRect();
-      if (x > r.left && x < r.right) {
-        const mid = r.left + r.width / 2;
-        if (x < mid) bar.insertBefore(drag.b, el); else bar.insertBefore(drag.b, el.nextSibling);
-        break;
-      }
-    }
-    // 端に来たら横に送る
-    const br = bar.getBoundingClientRect();
-    if (x < br.left + 40) bar.scrollLeft -= 12;
-    else if (x > br.right - 40) bar.scrollLeft += 12;
+  function layout() {
+    const d = drag;
+    const dx = cx(d.lastClient) - d.startX;
+    const me0 = d.slots[d.from];
+    // 端より外へは行かせない
+    const minDx = d.slots[0].left - me0.left, last = d.slots[d.slots.length - 1];
+    const maxDx = last.left + last.width - (me0.left + me0.width);
+    const mdx = Math.max(minDx - 20, Math.min(maxDx + 20, dx));
+    d.b.style.transform = `translateX(${mdx}px) scale(1.08)`;
+    // 中心がどのタブの中心を越えたかで、入る場所を決める
+    const center = me0.left + me0.width / 2 + mdx;
+    let to = 0;
+    d.slots.forEach((sl, i) => { if (i !== d.from && sl.left + sl.width / 2 < center) to++; });
+    d.to = to;
+    const shift = me0.width + d.gap;
+    d.slots.forEach((sl, i) => {
+      if (i === d.from) return;
+      let t = 0;
+      if (d.from < to && i > d.from && i <= to) t = -shift;
+      else if (d.from > to && i < d.from && i >= to) t = shift;
+      sl.el.style.transform = t ? `translateX(${t}px)` : '';
+    });
   }
+  function edgeScroll() {
+    const br = bar.getBoundingClientRect(), x = drag.lastClient;
+    if (x < br.left + 44) bar.scrollLeft -= Math.ceil((br.left + 44 - x) / 4);
+    else if (x > br.right - 44) bar.scrollLeft += Math.ceil((x - (br.right - 44)) / 4);
+  }
+  function moveDrag(x) { if (drag) drag.lastClient = x; }
   function endDrag() {
     if (!drag) return;
-    drag.b.classList.remove('dragging');
-    bar.classList.remove('sorting');
-    drag = null;
-    dragJustEnded = true; setTimeout(() => { dragJustEnded = false; }, 350);
-    myOrder = Array.from(bar.querySelectorAll('button.movable')).map(el => el.dataset.folder);
-    FM.store.set('folderOrder', myOrder);
-    FM.store.set('dragHintSeen', true);
-    applyMyOrder();
-    render();
-    if (me.mode === 'line') FM.api('saveFolderOrder', { order: myOrder }).catch(() => FM.toast('並び順を保存できませんでした', true));
+    const d = drag; drag = null;
+    cancelAnimationFrame(d.raf);
+    // 入る場所へすっと収める
+    const order = d.items.slice(); order.splice(d.from, 1); order.splice(d.to, 0, d.b);
+    let target = d.slots[0].left;
+    for (let i = 0; i < d.to; i++) target += order[i].getBoundingClientRect().width + d.gap;
+    d.b.style.transition = 'transform .18s ease-out';
+    d.b.style.transform = `translateX(${target - d.slots[d.from].left}px)`;
+    dragJustEnded = true; setTimeout(() => { dragJustEnded = false; }, 400);
+    setTimeout(() => {
+      d.b.classList.remove('dragging');
+      bar.classList.remove('sorting');
+      myOrder = order.map(el => el.dataset.folder);
+      FM.store.set('folderOrder', myOrder);
+      FM.store.set('dragHintSeen', true);
+      const keep = bar.scrollLeft;
+      applyMyOrder();
+      render(); // 並べ直して描き直す（タブはまっさらになる）
+      bar.scrollLeft = keep;
+      if (d.from !== d.to && me.mode === 'line') FM.api('saveFolderOrder', { order: myOrder }).catch(() => FM.toast('並び順を保存できませんでした', true));
+    }, 190);
   }
   // スマホ（指）
   bar.addEventListener('touchstart', e => { const t = e.touches[0]; startPress(t.clientX, t.clientY, e.target); }, { passive: true });
